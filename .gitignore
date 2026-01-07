@@ -1,0 +1,90 @@
+# Environment variables and sensitive data
+.env
+*.env
+credentials.enc
+secrets_store.py
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs and databases
+*.log
+logs.txt
+*.db
+*.sqlite
+*.sqlite3
+bot_state.db
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Charts and generated files
+chart_*.png
+*.png
+*.jpg
+*.jpeg
+
+# Backup files
+*_backup_*.json
+*.bak
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Documentation drafts and internal notes
+*_DRAFT.md
+*_NOTES.md
+CORRECCIONES_*.md
+OPTIMIZATION_*.md
+SISTEMA_*.md
+ESTADO_*.md
+MEJORAS_*.md
+AJUSTES_*.md
+
+# Test files
+test_*.py
+*_test.py
