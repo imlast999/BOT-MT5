@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\eth_abi\grammar.py
+# hypothesis_version: 6.151.2
+
+[256, '()', 'address', 'arrlist', 'base', 'byte', 'bytes', 'bytes1', 'bytes24', 'components', 'fixed', 'fixed128x18', 'function', 'hash', 'int', 'int256', 'node', 'string', 'sub', 'ufixed', 'ufixed128x18', 'uint', 'uint256', 'x']

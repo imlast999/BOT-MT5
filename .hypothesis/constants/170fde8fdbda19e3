@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\websockets\legacy\client.py
+# hypothesis_version: 6.151.2
+
+[1.618, 1.92, 60.0, 101, 301, 302, 303, 307, 308, ', ', '< %s: %s', '< HTTP/1.1 %d %s', '> %s: %s', '> GET %s HTTP/1.1', 'Authorization', 'Host', 'Location', 'Origin', 'User-Agent', 'client', 'connect', 'deflate', 'host', 'klass', 'legacy_recv', 'loop', 'path', 'port', 'remove loop argument', 'server_hostname', 'sock', 'ssl', 'timeout', 'too many redirects', 'unix', 'unix_connect', 'websockets.client', 'ws://localhost/']

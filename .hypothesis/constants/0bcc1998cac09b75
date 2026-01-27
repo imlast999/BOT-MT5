@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\websockets\legacy\http.py
+# hypothesis_version: 6.151.2
+
+[b'\r\n', b' ', b' \t', b':', b'GET', b'HTTP/1.1', b"[-!#$%&\\'*+.^_`|~0-9a-zA-Z]+", b'[\\x09\\x20-\\x7e\\x80-\\xff]*', 100, 128, 1000, 8192, 'ascii', 'backslashreplace', 'line too long', 'line without CRLF', 'read_request', 'read_response', 'surrogateescape']

@@ -19,6 +19,7 @@ from trading_rules import create_advanced_filter, should_execute_signal
 from backtest_tracker import backtest_tracker
 import MetaTrader5 as mt5
 from position_manager import list_positions, close_position
+from live_dashboard import start_live_dashboard, stop_live_dashboard, update_dashboard_stats
 
 # Importar sistema de apertura de mercados
 try:
@@ -69,6 +70,26 @@ signals_logger = logging.getLogger('signals')
 signals_logger.setLevel(logging.INFO)  # Mantener info de señales
 
 # Logger personalizado para eventos importantes
+def log_event(message: str, level: str = "INFO", component: str = "BOT"):
+    """
+    Logger personalizado para eventos importantes del bot.
+    Ahora que capturamos toda la salida, solo necesitamos hacer print()
+    """
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    
+    # Formato para consola (que se capturará automáticamente en el archivo)
+    console_msg = f"[{timestamp}] 🤖 {component}: {message}"
+    
+    # Solo hacer print - el sistema TeeOutput se encarga del resto
+    print(console_msg)
+    
+    # También usar el logger estándar para mantener compatibilidad
+    if level.upper() == "ERROR":
+        logger.error(f"{component}: {message}")
+    elif level.upper() == "WARNING":
+        logger.warning(f"{component}: {message}")
+    else:
+        logger.info(f"{component}: {message}")
 class BotEventLogger:
     """Logger personalizado para eventos importantes del bot"""
     
@@ -100,23 +121,80 @@ class BotEventLogger:
 bot_logger = BotEventLogger()
 
 # ensure we also write a simple log file for quicker debugging
-def ensure_log_file(log_path: str | None = None):
-    lp = log_path or os.path.join(os.path.dirname(__file__), 'logs.txt')
+def ensure_log_file(log_path: str | None = None, clear_on_start: bool = True):
+    """
+    Crear un nuevo archivo de log con timestamp único cada vez que se inicia el bot
+    """
+    from datetime import datetime
+    import sys
+    
+    # Crear nombre de archivo con timestamp
+    if log_path is None:
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        log_path = os.path.join(os.path.dirname(__file__), f'logs_{timestamp}.txt')
+    
     try:
-        # create file if missing
-        open(lp, 'a', encoding='utf-8').close()
-        # add a file handler if not already added
-        fh_exists = any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath(lp) for h in logging.getLogger().handlers)
+        # Crear archivo con header inicial
+        with open(log_path, 'w', encoding='utf-8') as f:
+            startup_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            f.write(f"=== BOT STARTED: {startup_time} ===\n")
+            f.write(f"=== LOG FILE: {os.path.basename(log_path)} ===\n")
+            f.write("=" * 60 + "\n\n")
+        
+        # Configurar logging para capturar TODO
+        class TeeOutput:
+            """Clase para duplicar la salida a archivo y consola"""
+            def __init__(self, file_path, original_stream):
+                self.file_path = file_path
+                self.original_stream = original_stream
+                self.terminal = original_stream
+                
+            def write(self, message):
+                # Escribir a la terminal original
+                self.terminal.write(message)
+                self.terminal.flush()
+                
+                # Escribir al archivo de log
+                try:
+                    with open(self.file_path, 'a', encoding='utf-8') as f:
+                        # Agregar timestamp a cada línea si no es solo un salto de línea
+                        if message.strip():
+                            timestamp = datetime.now().strftime('%H:%M:%S')
+                            f.write(f"[{timestamp}] {message}")
+                        else:
+                            f.write(message)
+                        f.flush()
+                except Exception:
+                    pass  # No queremos que el logging cause errores
+                    
+            def flush(self):
+                self.terminal.flush()
+        
+        # Redirigir stdout y stderr para capturar TODO
+        sys.stdout = TeeOutput(log_path, sys.stdout)
+        sys.stderr = TeeOutput(log_path, sys.stderr)
+        
+        # También configurar el handler de logging para el archivo
+        fh_exists = any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath(log_path) for h in logging.getLogger().handlers)
         if not fh_exists:
-            fh = logging.FileHandler(lp, encoding='utf-8')
+            fh = logging.FileHandler(log_path, encoding='utf-8')
             fh.setLevel(logging.INFO)
-            fmt = logging.Formatter('{"time":"%(asctime)s","level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}')
+            fmt = logging.Formatter('[%(asctime)s] %(levelname)s - %(name)s: %(message)s', datefmt='%H:%M:%S')
             fh.setFormatter(fmt)
             logging.getLogger().addHandler(fh)
-    except Exception:
-        logger.exception('Failed to ensure log file %s', lp)
+        
+        # Guardar la ruta del archivo actual para referencia
+        global current_log_file
+        current_log_file = log_path
+        
+        print(f"📝 Sistema de logging iniciado: {os.path.basename(log_path)}")
+        
+    except Exception as e:
+        print(f'❌ Error configurando sistema de logging: {e}')
+        logger.exception('Failed to ensure log file %s', log_path)
 
 # Immediately ensure logs.txt exists so errors are captured to disk
+current_log_file = None  # Variable global para el archivo de log actual
 ensure_log_file()
 
 load_dotenv()
@@ -547,10 +625,11 @@ if loaded:
 
 @bot.event
 async def on_ready():
-    bot_logger.bot_status(f"Conectado como {bot.user}")
+    log_event(f"Conectado como {bot.user}")
     
     # Inicializar gestores de riesgo
     init_risk_managers()
+    log_event("Gestores de riesgo inicializados correctamente")
     
     # Sync application commands (slash commands). If GUILD_ID is set, sync only to that guild for fast registration.
     try:
@@ -559,23 +638,25 @@ async def on_ready():
             # Attempt to copy any existing global commands to the guild (fast dev iteration)
             try:
                 await bot.tree.copy_global_to(guild=guild_obj)
-                bot_logger.bot_status("Comandos globales copiados al servidor")
+                log_event("Comandos globales copiados al servidor")
             except Exception:
                 pass
 
             await bot.tree.sync(guild=guild_obj)
-            bot_logger.bot_status(f"Comandos sincronizados al servidor {GUILD_ID}")
+            log_event(f"Comandos sincronizados al servidor {GUILD_ID}")
         else:
             await bot.tree.sync()
-            bot_logger.bot_status("Comandos sincronizados globalmente")
+            log_event("Comandos sincronizados globalmente")
     except Exception:
+        log_event("Error sincronizando comandos slash", "ERROR")
         logger.exception("Failed to sync slash commands")
     
     # load persisted autosignals state and last sent info
     try:
         load_db_state()
-        bot_logger.bot_status(f'Estado cargado: AUTOSIGNALS={state.autosignals}')
+        log_event(f'Estado cargado: AUTOSIGNALS={state.autosignals}')
     except Exception:
+        log_event("Error cargando estado de la base de datos", "ERROR")
         logger.exception('Failed to load DB state')
     
     # start autosignal background task
@@ -584,21 +665,55 @@ async def on_ready():
     # start trailing stops background task
     if TRAILING_STOPS_AVAILABLE:
         bot.loop.create_task(_trailing_stops_loop())
-        bot_logger.bot_status("Sistema de trailing stops iniciado")
+        log_event("Sistema de trailing stops iniciado")
     
     # start market opening alerts background task
     if MARKET_OPENING_AVAILABLE:
         bot.loop.create_task(_market_opening_loop())
-        bot_logger.bot_status("Sistema de alertas de apertura iniciado")
+        log_event("Sistema de alertas de apertura iniciado")
+    
+    # start live dashboard
+    try:
+        start_live_dashboard()
+        log_event("Dashboard live iniciado - Actualización cada 5 minutos")
+    except Exception as e:
+        log_event(f"Error iniciando dashboard live: {e}", "ERROR")
+        logger.exception("Failed to start live dashboard")
     
     # Print helpful invite URL for adding the bot with application commands scope
     try:
         app_id = bot.application_id or bot.user.id
         invite_url = f"https://discord.com/oauth2/authorize?client_id={app_id}&scope=bot%20applications.commands&permissions=8"
         logger.info(f"Invite URL: {invite_url}")
-        print(f"Invite URL (use this to invite the bot with slash commands): {invite_url}")
+        log_event("URL de invitación generada correctamente")
     except Exception:
+        log_event("Error generando URL de invitación", "WARNING")
         logger.debug("Could not build invite URL")
+    
+    # Log configuración importante
+    log_event(f"AUTO_EXECUTE_SIGNALS: {AUTO_EXECUTE_SIGNALS}")
+    log_event(f"AUTO_EXECUTE_CONFIDENCE: {AUTO_EXECUTE_CONFIDENCE}")
+    log_event(f"AUTOSIGNAL_INTERVAL: {AUTOSIGNAL_INTERVAL} segundos")
+    log_event(f"Símbolos monitoreados: {AUTOSIGNAL_SYMBOLS}")
+    
+    # Log estado de módulos opcionales
+    if TRAILING_STOPS_AVAILABLE:
+        log_event("Módulo trailing stops: DISPONIBLE")
+    else:
+        log_event("Módulo trailing stops: NO DISPONIBLE", "WARNING")
+    
+    if MARKET_OPENING_AVAILABLE:
+        log_event("Módulo market opening: DISPONIBLE")
+    else:
+        log_event("Módulo market opening: NO DISPONIBLE", "WARNING")
+    
+    log_event("Bot completamente inicializado y listo para operar")
+    
+    # Mostrar información del archivo de log
+    if current_log_file:
+        log_filename = os.path.basename(current_log_file)
+        log_event(f"📝 Archivo de log: {log_filename}")
+        log_event(f"📁 Ruta completa: {current_log_file}")
 
 # ======================
 # COMANDOS
@@ -986,7 +1101,7 @@ async def _find_signals_channel():
 
 async def _auto_signal_loop():
     await bot.wait_until_ready()
-    bot_logger.bot_status(f'Auto-signal loop iniciado (AUTOSIGNALS={state.autosignals})')
+    log_event(f'Auto-signal loop iniciado (AUTOSIGNALS={state.autosignals}, AUTO_EXECUTE={AUTO_EXECUTE_SIGNALS})')
     
     scan_count = 0
     while True:
@@ -994,12 +1109,12 @@ async def _auto_signal_loop():
             if state.autosignals and not KILL_SWITCH:
                 scan_count += 1
                 if scan_count % 10 == 1:  # Log cada 10 escaneos (cada ~3 minutos)
-                    bot_logger.autosignal_scan()
+                    log_event(f"🔍 AUTOSIGNAL SCAN: Checking {len(AUTOSIGNAL_SYMBOLS)} pairs...")
                 
                 ch = await _find_signals_channel()
                 if ch is None:
                     if scan_count % 50 == 1:  # Log error cada 50 escaneos
-                        bot_logger.bot_status('Canal #signals no encontrado para autosignals')
+                        log_event('Canal #signals no encontrado para autosignals', "WARNING")
                 else:
                     signals_found = 0
                     for sym in AUTOSIGNAL_SYMBOLS:
@@ -1074,7 +1189,7 @@ async def _auto_signal_loop():
                                 else:
                                     strategy_label = strategy_used
                                 
-                                bot_logger.signal_generated(f"{sym} [{strategy_label}]", sig.get('type'), confidence)
+                                log_event(f"✅ SIGNAL GENERATED: {sym} [{strategy_label}] {sig.get('type')} @ {sig.get('entry'):.5f} | Confidence: {confidence}")
                                 
                                 text = (
                                     f"🎯 **SEÑAL AUTOMÁTICA** (ID {sid})\n"
@@ -1115,16 +1230,16 @@ async def _auto_signal_loop():
                                 save_last_auto_sent(sym, now, fingerprint)
                                 state.last_auto_sent[sym] = {'time': now, 'sig': fingerprint}
                             else:
-                                # Log señal rechazada ocasionalmente
-                                if scan_count % 20 == 1:  # Cada 20 escaneos
-                                    reason = risk_info.get('reason', 'Sin razón específica') if risk_info else 'Sin información'
-                                    bot_logger.signal_rejected(sym, reason)
+                                # Log señal rechazada
+                                reason = risk_info.get('reason', 'No hay señal básica válida') if risk_info else 'Sin información de riesgo'
+                                log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: {reason}")
                         except Exception:
+                            log_event(f"❌ ERROR scanning {sym}", "ERROR")
                             logger.exception('Error scanning symbol %s', sym)
                     
                     # Log resumen cada cierto tiempo
                     if scan_count % 30 == 0:  # Cada 30 escaneos (~10 minutos)
-                        bot_logger.bot_status(f"Escaneo #{scan_count}: {signals_found} señales encontradas")
+                        log_event(f"Escaneo #{scan_count}: {signals_found} señales encontradas")
             
             await asyncio.sleep(AUTOSIGNAL_INTERVAL)
         except Exception:
@@ -1171,6 +1286,46 @@ async def slash_status(interaction: discord.Interaction):
     ]
 
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="logs_info")
+async def slash_logs_info(interaction: discord.Interaction):
+    """Muestra información del archivo de logs actual (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    if current_log_file and os.path.exists(current_log_file):
+        # Obtener información del archivo
+        file_size = os.path.getsize(current_log_file)
+        file_size_mb = file_size / (1024 * 1024)
+        
+        # Obtener timestamp de creación del archivo
+        creation_time = datetime.fromtimestamp(os.path.getctime(current_log_file))
+        
+        # Contar líneas del archivo
+        try:
+            with open(current_log_file, 'r', encoding='utf-8') as f:
+                line_count = sum(1 for _ in f)
+        except Exception:
+            line_count = "Error contando líneas"
+        
+        lines = [
+            "📝 **INFORMACIÓN DEL ARCHIVO DE LOGS**",
+            "",
+            f"📁 **Archivo:** `{os.path.basename(current_log_file)}`",
+            f"📂 **Ruta:** `{current_log_file}`",
+            f"📊 **Tamaño:** {file_size_mb:.2f} MB ({file_size:,} bytes)",
+            f"📄 **Líneas:** {line_count:,}" if isinstance(line_count, int) else f"📄 **Líneas:** {line_count}",
+            f"🕐 **Creado:** {creation_time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"⏱️ **Duración:** {datetime.now() - creation_time}",
+            "",
+            "💡 **Nota:** Este archivo contiene TODA la salida de la terminal del bot."
+        ]
+        
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ No se encontró información del archivo de logs actual", ephemeral=True)
 
 
 @bot.tree.command(name="positions")
@@ -1703,9 +1858,12 @@ async def slash_autosignals(interaction: discord.Interaction):
             new_state = not state.autosignals
             state.autosignals = new_state
             
+            log_event(f"🔄 AUTOSIGNALS {'ACTIVADAS' if new_state else 'DESACTIVADAS'} por usuario")
+            
             try:
                 save_autosignals_state(new_state)
             except Exception:
+                log_event("❌ Error guardando estado de autosignals", "ERROR")
                 logger.exception('Failed to save autosignals state')
             
             # Actualizar embed
@@ -2673,14 +2831,17 @@ async def slash_accept(interaction: discord.Interaction, signal_id: int):
         return
 
     await interaction.response.defer(thinking=True)
+    log_event(f"Usuario intentando aceptar señal ID: {signal_id}")
 
     signal = state.pending_signals.get(signal_id)
     if not signal:
+        log_event(f"❌ Señal {signal_id} no encontrada", "WARNING")
         await interaction.followup.send("❌ Señal no encontrada")
         return
 
     if datetime.now(timezone.utc) > signal.get("expires", datetime.now(timezone.utc)):
         del state.pending_signals[signal_id]
+        log_event(f"⌛ Señal {signal_id} expirada y eliminada", "WARNING")
         await interaction.followup.send("⌛ Señal expirada")
         return
 
@@ -2722,6 +2883,7 @@ async def slash_accept(interaction: discord.Interaction, signal_id: int):
                     symbol_str = str(symbol_str)
                 
                 logger.debug(f"Ejecutando orden modal: {symbol_str} {s.get('type')} {lot_val}")
+                log_event(f"🎯 EXECUTING ORDER: {symbol_str} {s.get('type')} {lot_val} lots (Modal)")
                 res = place_order(symbol_str, s['type'], lot_val, price=s.get('entry'), sl=s.get('sl'), tp=s.get('tp'))
                 state.trades_today += 1
                 try:
@@ -2730,8 +2892,10 @@ async def slash_accept(interaction: discord.Interaction, signal_id: int):
                     logger.exception('Failed to save trades_today')
                 if self.sid in state.pending_signals:
                     del state.pending_signals[self.sid]
+                log_event(f"✅ ORDER EXECUTED: {res}")
                 await interaction_modal.response.send_message(f'✅ Orden ejecutada: {res}', ephemeral=True)
             except Exception as e:
+                log_event(f"❌ ORDER FAILED: {e}", "ERROR")
                 await interaction_modal.response.send_message(f'❌ Error ejecutando orden: {e}', ephemeral=True)
 
     class ExecView(discord.ui.View):
@@ -2767,6 +2931,7 @@ async def slash_accept(interaction: discord.Interaction, signal_id: int):
                     symbol_str = str(symbol_str)
                 
                 logger.debug(f"Ejecutando orden directa: {symbol_str} {s.get('type')} {lot_val}")
+                log_event(f"🎯 EXECUTING ORDER: {symbol_str} {s.get('type')} {lot_val} lots (Direct)")
                 res = place_order(symbol_str, s['type'], lot_val, price=s.get('entry'), sl=s.get('sl'), tp=s.get('tp'))
                 state.trades_today += 1
                 try:
@@ -2775,8 +2940,10 @@ async def slash_accept(interaction: discord.Interaction, signal_id: int):
                     logger.exception('Failed to save trades_today')
                 if self.sid in state.pending_signals:
                     del state.pending_signals[self.sid]
+                log_event(f"✅ ORDER EXECUTED: {res}")
                 await interaction_exec.response.send_message(f'✅ Orden ejecutada: {res}', ephemeral=True)
             except Exception as e:
+                log_event(f"❌ ORDER FAILED: {e}", "ERROR")
                 await interaction_exec.response.send_message(f'❌ Error ejecutando orden: {e}', ephemeral=True)
 
         @discord.ui.button(label='Personalizar', style=discord.ButtonStyle.primary)
@@ -2801,9 +2968,12 @@ async def slash_reject(interaction: discord.Interaction, signal_id: int):
         return
 
     if signal_id in state.pending_signals:
+        signal = state.pending_signals[signal_id]
         del state.pending_signals[signal_id]
+        log_event(f"❌ SIGNAL REJECTED: ID {signal_id} ({signal.get('symbol', 'N/A')} {signal.get('type', 'N/A')})")
         await interaction.response.send_message(f"❌ Señal {signal_id} rechazada")
     else:
+        log_event(f"❌ Intento de rechazar señal inexistente: ID {signal_id}", "WARNING")
         await interaction.response.send_message("❌ Señal no encontrada")
 
 
@@ -3486,7 +3656,25 @@ if __name__ == '__main__':
         raise
     finally:
         # ensure MT5 is shutdown when process exits
+        log_event("Bot cerrándose - Limpiando recursos...")
         try:
-            mt5_shutdown()
+            stop_live_dashboard()
+            log_event("Dashboard live detenido")
         except Exception:
             pass
+        try:
+            mt5_shutdown()
+            log_event("MT5 desconectado")
+        except Exception:
+            pass
+        
+        # Información final del archivo de log
+        if current_log_file and os.path.exists(current_log_file):
+            file_size = os.path.getsize(current_log_file)
+            file_size_mb = file_size / (1024 * 1024)
+            log_event(f"📝 Log final guardado: {os.path.basename(current_log_file)} ({file_size_mb:.2f} MB)")
+        
+        log_event("Bot cerrado completamente")
+        print("=" * 60)
+        print(f"📝 Sesión completa guardada en: {os.path.basename(current_log_file) if current_log_file else 'archivo desconocido'}")
+        print("=" * 60)

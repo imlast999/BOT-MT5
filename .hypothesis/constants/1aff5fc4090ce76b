@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\rlp\sedes\serializable.py
+# hypothesis_version: 6.151.2
+
+['CLOSED', 'INITIALIZED', 'Meta', 'OPEN', '^[^\\d\\W]\\w*\\Z', '_', '__dict__', '__slots__', '_hash_cache', '_meta', "can't set attribute", 'field_attrs', 'field_names', 'fields', 'sedes']

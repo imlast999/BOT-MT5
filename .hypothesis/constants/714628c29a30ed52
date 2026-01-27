@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\Documents\BOT MT5\multi_timeframe.py
+# hypothesis_version: 6.151.2
+
+[0.002, 0.5, 0.6, 2.5, 100, 'BUY', 'EMAs alcistas', 'EMAs bajistas', 'HIGH', 'M15', 'MACD alcista', 'MACD bajista', 'MACD negativo en M15', 'MACD positivo en M15', 'MEDIUM', 'Momentum alcista', 'Momentum bajista', 'No hay datos M15', 'Por debajo BB middle', 'Por encima BB middle', 'SELL', 'Vela fuerte', 'above', 'atr', 'bb_lower', 'bb_middle', 'bb_position', 'bb_upper', 'below', 'body_ratio', 'close', 'confidence', 'confluences', 'details', 'ema21', 'ema50', 'ema8', 'entry', 'expires', 'explanation', 'h1_signal_id', 'high', 'id', 'low', 'macd', 'macd_hist', 'macd_signal', 'open', 'reasons', 'rsi', 's', 'score', 'sl', 'strategy', 'symbol', 'time', 'timeframe', 'tp', 'type']

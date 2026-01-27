@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\web3\middleware\gas_price_strategy.py
+# hypothesis_version: 6.151.2
+
+['AsyncWeb3', 'Web3', 'baseFeePerGas', 'eth_sendTransaction', 'gasPrice', 'latest', 'maxFeePerGas', 'maxPriorityFeePerGas']

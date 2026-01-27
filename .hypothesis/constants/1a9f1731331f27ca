@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\websockets\legacy\protocol.py
+# hypothesis_version: 6.151.2
+
+[1000, 1002, 1006, 1007, 1009, 1011, '!I', '< %s', '= connection is OPEN', '> %s', 'Connection lost', 'broadcast', 'data transfer failed', "don't use secure", 'keepalive_ping_task', 'local_address', 'peername', 'remote_address', 'remove loop argument', 'skipped broadcast', 'sockname', 'strict', 'transfer_data_task', 'undefined', 'unexpected opcode', 'utf-8', 'websocket', 'websockets.protocol']

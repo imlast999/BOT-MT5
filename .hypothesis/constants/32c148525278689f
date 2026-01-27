@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\eth_account\messages.py
+# hypothesis_version: 6.151.2
+
+[b'\x00', b'\x01', b'\x19', b'E', b'thereum Signed Message:\n', 'utf-8']

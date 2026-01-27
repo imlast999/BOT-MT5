@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\bitarray\util.py
+# hypothesis_version: 6.151.2
+
+['\n%s', '%s(%s', '%s)\n', "'", "'''", '0', '1', 'any_and', 'ba2base', 'ba2hex', 'ba2int', 'base2ba', 'big', 'both', 'byteswap', 'canonical_decode', 'canonical_huffman', 'correspond_all', 'count_and', 'count_n', 'count_or', 'count_xor', 'deserialize', 'group must be >= 1', 'hex2ba', 'huffman_code', 'indent must be >= 0', 'int2ba', 'intervals', 'left', 'length must be > 0', 'little', 'ones', 'parity', 'pprint', 'right', 'sc_decode', 'sc_encode', 'serialize', 'strip', 'subset', 'urandom', 'vl_decode', 'vl_encode', 'xor_indices', 'zeros']

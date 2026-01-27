@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\toolz\functoolz.py
+# hypothesis_version: 6.151.2
+
+['%s:%s', '%s_excepting_%s', '(%s)', '*args, **kwargs', ', ', '.', ':', '<curry>', '__doc__', '__get__', '__module__', '__name__', '__qualname__', '__signature__', '_of_', '_or_', '_partial', '_sigspec', 'apply', 'args', 'complement', 'compose', 'compose_left', 'curry', 'do', 'excepting', 'excepts', 'first', 'flip', 'func', 'funcs', 'identity', 'juxt', 'keywords', 'memoize', 'pipe', 'pypy_version_info', 'thread_first', 'thread_last', '{f}({g})']

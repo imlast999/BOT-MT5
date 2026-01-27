@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\parsimonious\expressions.py
+# hypothesis_version: 6.151.2
+
+[' / ', '!', '%s = %s', '%s%s', '&', '(', '({0})', ')', '*', '+', '<%s %s>', '?', '__func__', 'identity_tuple', 'ilmsuxa', 'inf', 'literal', 'max', 'members', 'min', 'name', 'negativity', 're', '{%d,%d}', '{%d,}', '{,%d}', '~{!r}{}']

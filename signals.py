@@ -833,76 +833,38 @@ def mean_reversion_strategy(df: pd.DataFrame, config: dict | None = None):
 @register_rule('eurusd_advanced')
 def eurusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     """
-    Estrategia avanzada específica para EURUSD
-    - Breakout de consolidación con confirmación múltiple
-    - Filtros de volatilidad y momentum
-    - Gestión dinámica de SL/TP
+    Estrategia EURUSD: Breakout 20 períodos + EMA50/EMA200 filtro + RSI >50/<50
+    Implementación exacta según especificaciones del README
     """
     cfg = config or {}
     df = df.copy()
     
-    # Parámetros específicos para EURUSD
-    consolidation_periods = int(cfg.get('consolidation_periods', 24))  # 24 horas
-    min_range_pips = float(cfg.get('min_range_pips', 15))  # 15 pips mínimo
-    volume_threshold = float(cfg.get('volume_threshold', 1.4))
-    
-    if len(df) < consolidation_periods + 10:
+    # Verificar datos suficientes
+    if len(df) < 200:
         return None, df
     
-    # Calcular indicadores técnicos
-    df['ema21'] = df['close'].ewm(span=21).mean()
+    # Indicadores requeridos
     df['ema50'] = df['close'].ewm(span=50).mean()
     df['ema200'] = df['close'].ewm(span=200).mean()
     df['rsi'] = _rsi(df['close'], 14)
-    df['atr'] = (df['high'] - df['low']).rolling(14).mean()
     
-    # MACD para momentum
-    ema12 = df['close'].ewm(span=12).mean()
-    ema26 = df['close'].ewm(span=26).mean()
-    df['macd'] = ema12 - ema26
-    df['macd_signal'] = df['macd'].ewm(span=9).mean()
-    df['macd_hist'] = df['macd'] - df['macd_signal']
-    
-    # Identificar consolidación
-    recent_high = df['high'].rolling(consolidation_periods).max().iloc[-2]
-    recent_low = df['low'].rolling(consolidation_periods).min().iloc[-2]
-    consolidation_range = recent_high - recent_low
-    
-    # Verificar que la consolidación sea significativa
-    avg_atr = df['atr'].iloc[-10:].mean()
-    if consolidation_range < avg_atr * min_range_pips / 10000:  # Convertir pips a precio
-        return None, df
+    # Breakout de 20 períodos
+    df['high_20'] = df['high'].rolling(20).max()
+    df['low_20'] = df['low'].rolling(20).min()
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
     price = float(last['close'])
     
-    # Verificar tendencia general (EMA 200)
-    trend_bullish = price > last['ema200']
-    trend_bearish = price < last['ema200']
-    
-    # Verificar momentum (MACD)
-    momentum_bullish = last['macd_hist'] > 0 and last['macd_hist'] > prev['macd_hist']
-    momentum_bearish = last['macd_hist'] < 0 and last['macd_hist'] < prev['macd_hist']
-    
-    # Verificar volumen (si disponible)
-    volume_confirmation = True
-    if 'tick_volume' in df.columns:
-        avg_volume = df['tick_volume'].rolling(20).mean().iloc[-2]
-        current_volume = last['tick_volume']
-        volume_confirmation = current_volume > avg_volume * volume_threshold
-    
-    # RSI en zona favorable
-    rsi_favorable = 30 <= last['rsi'] <= 70
-    
-    # Breakout alcista
-    if (trend_bullish and momentum_bullish and volume_confirmation and rsi_favorable and
-        price > recent_high and last['close'] > last['open'] and
-        last['ema21'] > last['ema50']):
+    # Señal de compra: Breakout alcista + filtros
+    if (price > last['high_20'] and  # Breakout alcista de 20 períodos
+        last['ema50'] > last['ema200'] and  # EMA50 > EMA200 (tendencia alcista)
+        last['rsi'] > 50):  # RSI > 50
         
-        # SL dinámico basado en estructura
-        sl_distance = max(consolidation_range * 0.3, avg_atr * 1.5)
-        tp_distance = consolidation_range * 1.2
+        # Calcular niveles
+        atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
+        sl_distance = atr_value * 1.5
+        tp_distance = sl_distance * 2.0
         
         signal = {
             'symbol': 'EURUSD',
@@ -910,20 +872,22 @@ def eurusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price - sl_distance,
             'tp': price + tp_distance,
-            'explanation': f'EURUSD: Breakout alcista confirmado. Rango: {consolidation_range*10000:.1f} pips, RSI: {last["rsi"]:.1f}',
+            'explanation': f'EURUSD: Breakout alcista 20P + EMA50>EMA200 + RSI>50 ({last["rsi"]:.1f})',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 45))),
-            'confidence': 'HIGH',
+            'confidence': 'HIGH' if last['rsi'] > 60 else 'MEDIUM',
             'strategy': 'eurusd_advanced'
         }
         return signal, df
     
-    # Breakout bajista
-    if (trend_bearish and momentum_bearish and volume_confirmation and rsi_favorable and
-        price < recent_low and last['close'] < last['open'] and
-        last['ema21'] < last['ema50']):
+    # Señal de venta: Breakout bajista + filtros
+    if (price < last['low_20'] and  # Breakout bajista de 20 períodos
+        last['ema50'] < last['ema200'] and  # EMA50 < EMA200 (tendencia bajista)
+        last['rsi'] < 50):  # RSI < 50
         
-        sl_distance = max(consolidation_range * 0.3, avg_atr * 1.5)
-        tp_distance = consolidation_range * 1.2
+        # Calcular niveles
+        atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
+        sl_distance = atr_value * 1.5
+        tp_distance = sl_distance * 2.0
         
         signal = {
             'symbol': 'EURUSD',
@@ -931,9 +895,9 @@ def eurusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price + sl_distance,
             'tp': price - tp_distance,
-            'explanation': f'EURUSD: Breakout bajista confirmado. Rango: {consolidation_range*10000:.1f} pips, RSI: {last["rsi"]:.1f}',
+            'explanation': f'EURUSD: Breakout bajista 20P + EMA50<EMA200 + RSI<50 ({last["rsi"]:.1f})',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 45))),
-            'confidence': 'HIGH',
+            'confidence': 'HIGH' if last['rsi'] < 40 else 'MEDIUM',
             'strategy': 'eurusd_advanced'
         }
         return signal, df
@@ -944,63 +908,48 @@ def eurusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
 @register_rule('xauusd_advanced')
 def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     """
-    Estrategia avanzada específica para XAUUSD (Oro)
-    - Reversión en niveles clave con confirmación
-    - Gestión de volatilidad específica del oro
-    - Niveles psicológicos y técnicos
+    Estrategia XAUUSD: Reversión psicológica ±8-10$ del nivel + EMA50/EMA200 + Mecha ≥30%
+    Implementación exacta según especificaciones del README
     """
     cfg = config or {}
     df = df.copy()
     
-    # Parámetros específicos para oro
-    bb_period = int(cfg.get('bb_period', 20))
-    bb_std = float(cfg.get('bb_std', 2.0))
-    rsi_oversold = float(cfg.get('rsi_oversold', 20))
-    rsi_overbought = float(cfg.get('rsi_overbought', 80))
-    
-    if len(df) < bb_period + 10:
+    # Verificar datos suficientes
+    if len(df) < 200:
         return None, df
     
-    # Indicadores específicos para oro
-    df['rsi'] = _rsi(df['close'], 14)
-    df['ema20'] = df['close'].ewm(span=20).mean()
+    # Indicadores requeridos
     df['ema50'] = df['close'].ewm(span=50).mean()
+    df['ema200'] = df['close'].ewm(span=200).mean()
     
-    # Bollinger Bands
-    df['bb_middle'] = df['close'].rolling(bb_period).mean()
-    bb_std_val = df['close'].rolling(bb_period).std()
-    df['bb_upper'] = df['bb_middle'] + (bb_std_val * bb_std)
-    df['bb_lower'] = df['bb_middle'] - (bb_std_val * bb_std)
-    
-    # Stochastic para confirmación
-    low_14 = df['low'].rolling(14).min()
-    high_14 = df['high'].rolling(14).max()
-    df['stoch_k'] = 100 * ((df['close'] - low_14) / (high_14 - low_14))
-    df['stoch_d'] = df['stoch_k'].rolling(3).mean()
-    
-    # Niveles psicológicos del oro (se pueden actualizar)
-    psychological_levels = cfg.get('psychological_levels', [1900, 1950, 2000, 2050, 2100])
+    # Niveles psicológicos del oro (cada $50)
+    psychological_levels = cfg.get('psychological_levels', [1900, 1950, 2000, 2050, 2100, 2150])
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
     price = float(last['close'])
     
-    # Verificar proximidad a niveles psicológicos
-    near_psychological = any(abs(price - level) <= 5 for level in psychological_levels)
+    # Calcular tamaño de mecha
+    candle_range = last['high'] - last['low']
+    upper_wick = last['high'] - max(last['open'], last['close'])
+    lower_wick = min(last['open'], last['close']) - last['low']
+    upper_wick_pct = (upper_wick / candle_range) * 100 if candle_range > 0 else 0
+    lower_wick_pct = (lower_wick / candle_range) * 100 if candle_range > 0 else 0
     
-    # Patrón de reversión alcista
-    if (price <= last['bb_lower'] and 
-        last['rsi'] <= rsi_oversold and
-        last['stoch_k'] <= 20 and
-        last['close'] > last['open'] and  # Vela verde de reversión
-        prev['close'] < prev['open']):    # Vela roja anterior
+    # Encontrar el nivel psicológico más cercano
+    closest_level = min(psychological_levels, key=lambda x: abs(price - x))
+    distance_to_level = abs(price - closest_level)
+    
+    # Señal de compra: Reversión alcista cerca de nivel psicológico
+    if (distance_to_level <= 10 and  # ±8-10$ del nivel psicológico
+        price < closest_level and  # Precio por debajo del nivel (para reversión alcista)
+        last['ema50'] > last['ema200'] and  # EMA50 > EMA200 (tendencia alcista)
+        lower_wick_pct >= 30 and  # Mecha inferior ≥30%
+        last['close'] > last['open']):  # Vela alcista de reversión
         
-        # SL más amplio para oro (mayor volatilidad)
-        atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-        sl_distance = max(atr * 2.0, 8.0)  # Mínimo 8 dólares
-        tp_distance = sl_distance * float(cfg.get('rr_ratio', 2.5))
-        
-        confidence = 'HIGH' if near_psychological else 'MEDIUM'
+        # Niveles fijos para oro
+        sl_distance = 12.0  # $12 SL
+        tp_distance = 24.0  # $24 TP
         
         signal = {
             'symbol': 'XAUUSD',
@@ -1008,25 +957,23 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price - sl_distance,
             'tp': price + tp_distance,
-            'explanation': f'XAUUSD: Reversión alcista en BB inferior. RSI: {last["rsi"]:.1f}, Stoch: {last["stoch_k"]:.1f}',
+            'explanation': f'XAUUSD: Reversión alcista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {lower_wick_pct:.1f}%',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 60))),
-            'confidence': confidence,
+            'confidence': 'HIGH' if distance_to_level <= 5 else 'MEDIUM',
             'strategy': 'xauusd_advanced'
         }
         return signal, df
     
-    # Patrón de reversión bajista
-    if (price >= last['bb_upper'] and 
-        last['rsi'] >= rsi_overbought and
-        last['stoch_k'] >= 80 and
-        last['close'] < last['open'] and  # Vela roja de reversión
-        prev['close'] > prev['open']):    # Vela verde anterior
+    # Señal de venta: Reversión bajista cerca de nivel psicológico
+    if (distance_to_level <= 10 and  # ±8-10$ del nivel psicológico
+        price > closest_level and  # Precio por encima del nivel (para reversión bajista)
+        last['ema50'] < last['ema200'] and  # EMA50 < EMA200 (tendencia bajista)
+        upper_wick_pct >= 30 and  # Mecha superior ≥30%
+        last['close'] < last['open']):  # Vela bajista de reversión
         
-        atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-        sl_distance = max(atr * 2.0, 8.0)
-        tp_distance = sl_distance * float(cfg.get('rr_ratio', 2.5))
-        
-        confidence = 'HIGH' if near_psychological else 'MEDIUM'
+        # Niveles fijos para oro
+        sl_distance = 12.0  # $12 SL
+        tp_distance = 24.0  # $24 TP
         
         signal = {
             'symbol': 'XAUUSD',
@@ -1034,9 +981,9 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price + sl_distance,
             'tp': price - tp_distance,
-            'explanation': f'XAUUSD: Reversión bajista en BB superior. RSI: {last["rsi"]:.1f}, Stoch: {last["stoch_k"]:.1f}',
+            'explanation': f'XAUUSD: Reversión bajista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {upper_wick_pct:.1f}%',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 60))),
-            'confidence': confidence,
+            'confidence': 'HIGH' if distance_to_level <= 5 else 'MEDIUM',
             'strategy': 'xauusd_advanced'
         }
         return signal, df
@@ -1047,68 +994,36 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
 @register_rule('btceur_advanced')
 def btceur_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     """
-    Estrategia avanzada específica para BTCEUR
-    - Momentum y breakout para crypto
-    - Gestión de alta volatilidad
-    - Niveles de soporte/resistencia dinámicos
+    Estrategia BTCEUR: EMA12/26 cross + EMA50 filtro + RSI direccional
+    Implementación exacta según especificaciones del README
     """
     cfg = config or {}
     df = df.copy()
     
-    # Parámetros específicos para crypto
-    momentum_period = int(cfg.get('momentum_period', 12))
-    volatility_threshold = float(cfg.get('volatility_threshold', 0.03))  # 3%
-    
+    # Verificar datos suficientes
     if len(df) < 50:
         return None, df
     
-    # Indicadores para crypto
+    # Indicadores requeridos
     df['ema12'] = df['close'].ewm(span=12).mean()
     df['ema26'] = df['close'].ewm(span=26).mean()
     df['ema50'] = df['close'].ewm(span=50).mean()
     df['rsi'] = _rsi(df['close'], 14)
     
-    # MACD específico para crypto
-    df['macd'] = df['ema12'] - df['ema26']
-    df['macd_signal'] = df['macd'].ewm(span=9).mean()
-    df['macd_hist'] = df['macd'] - df['macd_signal']
-    
-    # Volatilidad (rango porcentual)
-    df['volatility'] = (df['high'] - df['low']) / df['close']
-    
-    # ADX para fuerza de tendencia
-    adx = _adx(df['high'], df['low'], df['close'], 14)
-    df['adx'] = adx
-    
-    # Niveles dinámicos de soporte/resistencia
-    lookback = int(cfg.get('lookback_periods', 20))
-    resistance = df['high'].rolling(lookback).max().iloc[-2]
-    support = df['low'].rolling(lookback).min().iloc[-2]
-    
     last = df.iloc[-1]
     prev = df.iloc[-2]
     price = float(last['close'])
     
-    # Verificar condiciones de mercado crypto
-    current_volatility = last['volatility']
-    adx_strong = last['adx'] > 25 if not np.isnan(last['adx']) else False
-    
-    # Filtro de volatilidad (no operar si es extrema)
-    if current_volatility > volatility_threshold:
-        return None, df
-    
-    # Momentum alcista + breakout
-    if (last['ema12'] > last['ema26'] > last['ema50'] and
-        last['macd_hist'] > 0 and last['macd_hist'] > prev['macd_hist'] and
-        price > resistance and
-        last['rsi'] > 50 and last['rsi'] < 75 and
-        adx_strong and
-        last['close'] > last['open']):
+    # Señal de compra: EMA12/26 cross alcista + filtros
+    if (last['ema12'] > last['ema26'] and  # Cross alcista EMA12 > EMA26
+        prev['ema12'] <= prev['ema26'] and  # Cross reciente
+        last['ema12'] > last['ema50'] and  # EMA12 > EMA50 (filtro de tendencia)
+        last['rsi'] > 50):  # RSI direccional alcista
         
-        # SL basado en volatilidad crypto
-        atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-        sl_distance = atr * float(cfg.get('sl_multiplier', 2.5))
-        tp_distance = sl_distance * float(cfg.get('rr_ratio', 3.0))
+        # Calcular niveles
+        atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
+        sl_distance = atr_value * 2.5
+        tp_distance = sl_distance * 2.5
         
         signal = {
             'symbol': 'BTCEUR',
@@ -1116,24 +1031,23 @@ def btceur_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price - sl_distance,
             'tp': price + tp_distance,
-            'explanation': f'BTCEUR: Momentum alcista + breakout. ADX: {last["adx"]:.1f}, Vol: {current_volatility*100:.1f}%',
+            'explanation': f'BTCEUR: Cross alcista EMA12/26 + EMA50 filtro + RSI direccional ({last["rsi"]:.1f})',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 90))),
-            'confidence': 'HIGH' if adx_strong and current_volatility < 0.02 else 'MEDIUM',
+            'confidence': 'HIGH' if last['rsi'] > 60 else 'MEDIUM',
             'strategy': 'btceur_advanced'
         }
         return signal, df
     
-    # Momentum bajista + breakout
-    if (last['ema12'] < last['ema26'] < last['ema50'] and
-        last['macd_hist'] < 0 and last['macd_hist'] < prev['macd_hist'] and
-        price < support and
-        last['rsi'] < 50 and last['rsi'] > 25 and
-        adx_strong and
-        last['close'] < last['open']):
+    # Señal de venta: EMA12/26 cross bajista + filtros
+    if (last['ema12'] < last['ema26'] and  # Cross bajista EMA12 < EMA26
+        prev['ema12'] >= prev['ema26'] and  # Cross reciente
+        last['ema12'] < last['ema50'] and  # EMA12 < EMA50 (filtro de tendencia)
+        last['rsi'] < 50):  # RSI direccional bajista
         
-        atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-        sl_distance = atr * float(cfg.get('sl_multiplier', 2.5))
-        tp_distance = sl_distance * float(cfg.get('rr_ratio', 3.0))
+        # Calcular niveles
+        atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
+        sl_distance = atr_value * 2.5
+        tp_distance = sl_distance * 2.5
         
         signal = {
             'symbol': 'BTCEUR',
@@ -1141,9 +1055,9 @@ def btceur_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price + sl_distance,
             'tp': price - tp_distance,
-            'explanation': f'BTCEUR: Momentum bajista + breakout. ADX: {last["adx"]:.1f}, Vol: {current_volatility*100:.1f}%',
+            'explanation': f'BTCEUR: Cross bajista EMA12/26 + EMA50 filtro + RSI direccional ({last["rsi"]:.1f})',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 90))),
-            'confidence': 'HIGH' if adx_strong and current_volatility < 0.02 else 'MEDIUM',
+            'confidence': 'HIGH' if last['rsi'] < 40 else 'MEDIUM',
             'strategy': 'btceur_advanced'
         }
         return signal, df

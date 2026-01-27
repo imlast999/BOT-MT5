@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\Documents\BOT MT5\rejected_signals_tracker.py
+# hypothesis_version: 6.151.2
+
+[' AND ', '1=1', 'CONFIDENCE_FILTER', 'CONFLUENCE_FAILED', 'CORRELATION_FILTER', 'DRAWDOWN_FILTER', 'NO_BASIC_SIGNAL', 'OTHER', 'RR_FILTER', 'RSI_FILTER', 'SESSION_FILTER', 'VOLATILITY_FILTER', 'WHERE symbol = ?', 'analysis_period_days', 'bot_state.db', 'by_category', 'by_hour', 'by_strategy', 'by_symbol', 'confianza', 'confidence', 'confluence', 'confluencia', 'correlación', 'correlation', 'daily_trends', 'date', 'drawdown', 'generated_at', 'market_conditions', 'no hay señal básica', 'no signal', 'r:r', 'rejection_category', 'rejection_reason', 'risk reward', 'rsi', 'sesión', 'session', 'session_id = ?', 'signal_data', 'strategy', 'symbol', 'symbol = ?', 'symbols_affected', 'timestamp', 'timestamp >= ?', 'total_rejections', 'volatilidad', 'volatility']

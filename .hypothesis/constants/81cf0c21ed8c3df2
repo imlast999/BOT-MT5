@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\web3\_utils\filters.py
+# hypothesis_version: 6.151.2
+
+['AsyncEth', 'Eth', 'address', 'data', 'data_filter_set', 'fromBlock', 'latest', 'log_entry_formatter', 'pending', 'string', 'toBlock', 'topics', 'utf-8']

@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\websockets\legacy\framing.py
+# hypothesis_version: 6.151.2
+
+[126, 127, 128, '!BB', '!H', '!Q', 'incorrect masking', 'invalid opcode']

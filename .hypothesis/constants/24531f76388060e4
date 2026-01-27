@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\pandas\core\computation\eval.py
+# hypothesis_version: 6.151.2
+
+['@', '__getitem__', 'inplace', 'numexpr', 'operand_types', 'pandas', 'python']

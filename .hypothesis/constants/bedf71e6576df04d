@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\web3\_utils\contract_error_handling.py
+# hypothesis_version: 6.151.2
+
+['00', '01', '0x08c379a0', '0x4e487b71', '0x556f1830', '11', '12', '20', '21', '22', '31', '32', '41', '51', 'Reverted ', 'Reverted 0x', 'address', 'bytes', 'bytes4', 'callData', 'callbackFunction', 'code', 'data', 'error', 'execution reverted', 'extraData', 'message', 'no data', 'sender', 'string[]', 'urls', 'utf8']

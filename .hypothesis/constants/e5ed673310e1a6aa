@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\py_ecc\fields\field_elements.py
+# hypothesis_version: 6.151.2
+
+['FQ', 'FQ12', 'FQ12_MODULUS_COEFFS', 'FQ2', 'FQ2_MODULUS_COEFFS', 'FQP', 'T_FQ', 'T_FQ12', 'T_FQ2', 'T_FQP', 'field_modulus']

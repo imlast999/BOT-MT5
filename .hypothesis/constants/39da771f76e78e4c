@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\web3\manager.py
+# hypothesis_version: 6.151.2
+
+[0.05, -32601, '0x', '2.0', 'AsyncBaseProvider', 'AsyncWeb3', 'BaseProvider', 'Web3', 'abi', 'attrdict', 'code', 'error', 'eth_subscribe', 'eth_subscription', 'gas_estimate', 'gas_price_strategy', 'id', 'jsonrpc', 'message', 'method', 'name_to_address', 'params', 'result', 'subscription', 'validation', 'web3.RequestManager']

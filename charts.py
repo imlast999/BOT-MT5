@@ -54,7 +54,21 @@ def generate_chart(df, symbol='EURUSD', signal=None, filename=None, title=None, 
 
     try:
         # Prepare data for mplfinance: set index to datetime and use OHLC columns
-        data = df.set_index('time').copy()
+        # Ser flexible con el nombre de la columna de tiempo
+        time_col = None
+        for col in ['time', 'datetime', 'timestamp']:
+            if col in df.columns:
+                time_col = col
+                break
+        
+        if time_col is None:
+            # Si no hay columna de tiempo, usar el índice si es datetime
+            if isinstance(df.index, pd.DatetimeIndex):
+                data = df.copy()
+            else:
+                raise ValueError(f"No time column found. Available columns: {list(df.columns)}")
+        else:
+            data = df.set_index(time_col).copy()
         
         # Ensure datetime index and sort ascending (mplfinance expects increasing time)
         try:

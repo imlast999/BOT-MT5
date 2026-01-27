@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\py_ecc\bls\ciphersuites.py
+# hypothesis_version: 6.151.2
+
+[b'\x00', b'BLS-SIG-KEYGEN-SALT-', b'BLS_POP_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_', b'BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_', b'BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_', b'BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_', 1.5, 'Invalid message', 'Invalid private key', 'Invalid public key', 'Invalid secret key', 'Invalid signature']

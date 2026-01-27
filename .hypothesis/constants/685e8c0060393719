@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\web3\_utils\transactions.py
+# hypothesis_version: 6.151.2
+
+[1.125, 100000, 'AsyncWeb3', 'Web3', 'accessList', 'baseFeePerGas', 'blockHash', 'chainId', 'data', 'from', 'gas', 'gasLimit', 'gasPrice', 'input', 'latest', 'maxFeePerGas', 'maxPriorityFeePerGas', 'nonce', 'pending', 'to', 'type', 'value']

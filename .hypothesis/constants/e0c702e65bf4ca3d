@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\web3\providers\websocket\request_processor.py
+# hypothesis_version: 6.151.2
+
+[500, 'eth_subscribe', 'eth_subscription', 'eth_unsubscribe', 'id', 'method', 'params', 'result', 'subscription']

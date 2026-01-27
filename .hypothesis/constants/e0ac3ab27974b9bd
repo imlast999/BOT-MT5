@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\web3\utils\exception_handling.py
+# hypothesis_version: 6.151.2
+
+[200, 299, 400, 499, 'bytes', 'callData', 'callbackFunction', 'data', 'extraData', 'sender', 'to', 'urls', '{data}', '{sender}']

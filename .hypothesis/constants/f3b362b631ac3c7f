@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\web3\middleware\cache.py
+# hypothesis_version: 6.151.2
+
+[240, 256, 'BlockInfoCache', 'Web3', 'avg_block_time', 'error', 'eth_accounts', 'eth_blockNumber', 'eth_call', 'eth_chainId', 'eth_coinbase', 'eth_estimateGas', 'eth_gasPrice', 'eth_getBalance', 'eth_getBlockByHash', 'eth_getBlockByNumber', 'eth_getCode', 'eth_getLogs', 'eth_getStorageAt', 'hash', 'latest', 'latest_block', 'net_version', 'number', 'result', 'timestamp', 'web3_clientVersion']

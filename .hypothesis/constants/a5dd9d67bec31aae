@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\packaging\utils.py
+# hypothesis_version: 6.151.2
+
+['(\\d+)(.*)', '-', '.tar.gz', '.whl', '.zip', 'NormalizedName', '[-_.]+', '^[\\w\\d._]*$', '__']

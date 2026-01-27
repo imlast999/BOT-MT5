@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\eth_account\_utils\structured_data\validation.py
+# hypothesis_version: 6.151.2
+
+['EIP712Domain', 'chainId', 'domain', 'message', 'name', 'primaryType', 'type', 'types', 'verifyingContract', 'version']

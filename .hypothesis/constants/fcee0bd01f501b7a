@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\py_ecc\bls\typing.py
+# hypothesis_version: 6.151.2
+
+['G1Compressed', 'G2Compressed']

@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\Documents\BOT MT5\advanced_filters.py
+# hypothesis_version: 6.151.2
+
+[0.0, 0.1, 0.2, 0.3, 0.5, 0.6, 0.8, 1.0, 1.2, 2.0, 5.0, 6.0, 8.0, 5000.0, 100, ' | ', ', ', 'BTCEUR', 'BUY', 'Crypto 24/7', 'EMA alcista', 'EMA bajista', 'EURUSD', 'Fuera de sesiones', 'Londres', 'Nueva York', 'Overlap Londres-NY', 'SELL', 'Sesión óptima', 'Tokio', 'Vela direccional', 'Volumen alto', 'XAUUSD', 'adjusted_risk', 'adx', 'close', 'confluence', 'correlation', 'drawdown', 'ema20', 'ema50', 'first_candle_eurusd', 'first_candle_rule', 'first_candle_xauusd', 'high', 'iloc', 'initial_balance', 'liquidity_grab_fvg', 'low', 'max', 'min', 'open', 'passed', 'reason', 'risk_multiplier', 'rr_ratio', 'rsi', 'score', 'session', 'strategy', 'symbol', 'tick_volume', 'type', 'volatility', 'wick_rejection']

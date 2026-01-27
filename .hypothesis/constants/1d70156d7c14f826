@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\Crypto\Hash\BLAKE2s.py
+# hypothesis_version: 6.151.2
+
+[160, 256, '%02x', 'Crypto.Hash._BLAKE2s', 'MAC check failed', 'Unknown parameters: ', 'data', 'digest_bits', 'digest_bytes', 'key', 'update_after_digest']

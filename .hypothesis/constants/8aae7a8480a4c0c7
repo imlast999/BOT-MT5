@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\websockets\client.py
+# hypothesis_version: 6.151.2
+
+[101, ', ', '13', '< %s: %s', '< HTTP/1.1 %d %s', '< [body] (%d bytes)', '> %s: %s', '> GET %s HTTP/1.1', 'Authorization', 'ClientProtocol', 'Connection', 'Host', 'Origin', 'Sec-WebSocket-Accept', 'Sec-WebSocket-Key', 'Upgrade', 'upgrade', 'websocket']

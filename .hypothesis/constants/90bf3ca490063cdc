@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\web3\providers\websocket\websocket_v2.py
+# hypothesis_version: 6.151.2
+
+[0.05, 1.75, 300, 'WEB3_WS_PROVIDER_URI', 'eth_subscription', 'id', 'loop', 'method', 'ping_interval', 'ping_timeout', 'uri', 'ws://', 'ws://127.0.0.1:8546', 'wss://']

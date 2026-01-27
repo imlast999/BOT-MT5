@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\websockets\protocol.py
+# hypothesis_version: 6.151.2
+
+[1002, 1005, 1006, 1007, 1009, 1011, '< %s', '< EOF', '= connection is %s', '> %s', '> EOF', 'Protocol', 'SEND_EOF', 'Side', 'State', 'parser failed']

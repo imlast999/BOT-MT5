@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\py_ecc\__init__.py
+# hypothesis_version: 6.151.2
+
+[100000, 'bls', 'bls12_381', 'bn128', 'optimized_bls12_381', 'optimized_bn128', 'py_ecc', 'py_ecc.bls', 'py_ecc.bls12_381', 'py_ecc.bn128', 'py_ecc.secp256k1', 'secp256k1']

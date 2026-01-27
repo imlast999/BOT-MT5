@@ -1,0 +1,4 @@
+# file: C:\Users\lxstb\AppData\Roaming\Python\Python313\site-packages\parsimonious\nodes.py
+# hypothesis_version: 6.151.2
+
+[' called "%s"', '%s(%r, s, %s, %s%s)', ', ', ', children=[%s]', '_rule', 'children', 'end', 'expr', 'full_text', 'grammar', 'match', 'parse', 's = %r', 'start', 'visit_', '{name} = {expr}']
