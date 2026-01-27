@@ -1,231 +1,439 @@
-# MT5 Trading Bot with Discord Integration
+# 🤖 BOT MT5 - Sistema de Trading Automatizado
 
-A sophisticated automated trading bot that integrates MetaTrader 5 with Discord for real-time signal generation, risk management, and trade execution across multiple currency pairs and assets.
+Bot de trading automatizado para MetaTrader 5 con integración Discord, análisis técnico avanzado y sistema de backtesting completo.
 
-## 🚀 Features
+## 📋 Tabla de Contenidos
 
-### Core Trading Capabilities
-- **Multi-Asset Support**: EURUSD, XAUUSD (Gold), BTCEUR (Bitcoin)
-- **Advanced Signal Detection**: Multiple strategies with fallback systems
-- **Risk Management**: Automated position sizing, drawdown protection, correlation filters
-- **Real-time Execution**: Direct MT5 integration with order management
-- **Professional Charts**: High-quality candlestick charts with technical indicators
+- [Características Principales](#-características-principales)
+- [Instalación y Configuración](#-instalación-y-configuración)
+- [Estrategias de Trading](#-estrategias-de-trading)
+- [Sistema de Auto-Ejecución](#-sistema-de-auto-ejecución)
+- [Dashboard y Monitoreo](#-dashboard-y-monitoreo)
+- [Comandos Discord](#-comandos-discord)
+- [Configuración Avanzada](#-configuración-avanzada)
+- [Backtesting](#-backtesting)
+- [Solución de Problemas](#-solución-de-problemas)
 
-### Discord Integration
-- **Slash Commands**: Modern Discord interface with 25+ commands
-- **Auto-Signals**: Automated signal broadcasting every 2 minutes
-- **Interactive Controls**: Accept/reject signals with buttons and modals
-- **Real-time Monitoring**: Live position tracking and performance stats
-- **Market Alerts**: Pre-market analysis and session notifications
+---
 
-### Advanced Systems
-- **Multi-Timeframe Analysis**: H1 signals with M15 precision entries
-- **Trailing Stops**: Automatic profit protection with breakeven management
-- **Market Opening Alerts**: Pre-market analysis for London/New York sessions
-- **Confluence Filters**: Multiple confirmation system for signal quality
-- **Fallback Strategies**: Hierarchical strategy system for consistent signal generation
+## 🚀 Características Principales
 
-## 📋 Requirements
+### **Trading Automatizado**
+- ✄1�7 **Auto-ejecución** de señales con confirmación
+- ✄1�7 **Gestión de riesgo** automática (0.5% por trade)
+- ✄1�7 **Stop Loss y Take Profit** dinámicos
+- ✄1�7 **Trailing Stops** inteligentes
+- ✄1�7 **Límites por período** (5 trades cada 12 horas)
 
-### Software Dependencies
-- Python 3.9+
-- MetaTrader 5 Terminal
-- Discord Bot Token
-- Required Python packages (see `requirements.txt`)
+### **Análisis Técnico**
+- ✄1�7 **3 Estrategias optimizadas**: EURUSD, XAUUSD, BTCEUR
+- ✄1�7 **Indicadores múltiples**: EMAs, RSI, ATR, Momentum
+- ✄1�7 **Filtros anti-duplicados** inteligentes
+- ✄1�7 **Análisis multi-timeframe** (H1 principal, M15 precisión)
 
-### Trading Account
-- MT5 Demo or Live account
-- Supported broker with EURUSD, XAUUSD, BTCEUR access
-- Minimum balance: $1000 (recommended $5000+ for demo testing)
+### **Monitoreo y Control**
+- ✄1�7 **Dashboard live** con métricas en tiempo real
+- ✄1�7 **Integración Discord** completa
+- ✄1�7 **Sistema de logging** detallado
+- ✄1�7 **Tracking de señales rechazadas**
+- ✄1�7 **Backtest automático** con estadísticas
 
-## 🛠️ Installation
+---
 
-### 1. Clone Repository
+## 🛠 Instalación y Configuración
+
+### **Requisitos Previos**
 ```bash
-git clone https://github.com/yourusername/mt5-discord-bot.git
-cd mt5-discord-bot
+# Python 3.8+
+# MetaTrader 5 instalado
+# Cuenta Discord Bot
 ```
 
-### 2. Install Dependencies
+### **1. Instalación de Dependencias**
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment
-Create a `.env` file with your settings:
+### **2. Configuración de Variables de Entorno**
+Copiar `.env.example` a `.env` y configurar:
+
 ```env
-# Discord Configuration
-DISCORD_TOKEN=your_discord_bot_token
-GUILD_ID=your_discord_server_id
-AUTHORIZED_USER_ID=your_discord_user_id
+# Discord
+DISCORD_TOKEN=tu_token_aqui
+GUILD_ID=tu_servidor_id
+AUTHORIZED_USER_ID=tu_user_id
 
-# Trading Configuration
+# Trading
 AUTOSIGNALS=1
-AUTOSIGNAL_INTERVAL=120
-AUTOSIGNAL_SYMBOLS=EURUSD,XAUUSD,BTCEUR
-MAX_TRADES_PER_DAY=7
+AUTO_EXECUTE_SIGNALS=1
+AUTO_EXECUTE_CONFIDENCE=LOW
+MAX_TRADES_PER_DAY=20
 
-# Risk Management
-DEFAULT_RISK_PCT=1.0
-DEMO_MODE=1
+# Símbolos monitoreados
+AUTOSIGNAL_SYMBOLS=EURUSD,XAUUSD,BTCEUR
 ```
 
-### 4. Setup Discord Bot
-1. Create a Discord application at [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a bot and copy the token
-3. Invite bot to your server with `applications.commands` scope
-4. Create a `#signals` channel for automated signals
+### **3. Configuración MT5**
+1. Abrir MetaTrader 5
+2. **Habilitar AutoTrading** (botón verde en toolbar)
+3. Permitir trading automatizado en configuración
+4. Verificar conexión con broker
 
-### 5. Configure MT5
-1. Install and login to MetaTrader 5
-2. Enable algorithmic trading in Tools → Options → Expert Advisors
-3. Ensure EURUSD, XAUUSD, BTCEUR symbols are available
-
-## 🎮 Usage
-
-### Starting the Bot
+### **4. Iniciar el Bot**
 ```bash
 python bot.py
 ```
 
-### Essential Commands
+---
 
-#### Signal Generation
-- `/signal [symbol]` - Generate manual signal for specific pair
-- `/force_autosignal [symbol]` - Force automatic signal generation
-- `/test_fallback [symbol]` - Test fallback strategy system
+## 📈 Estrategias de Trading
 
-#### Trading Management
-- `/accept [signal_id]` - Accept and execute pending signal
-- `/reject [signal_id]` - Reject pending signal
-- `/positions` - View open positions
-- `/close_position [ticket]` - Close specific position
+### **EURUSD Simple**
+```
+SETUP: Breakout de rango (15 períodos)
+CONFIRMACIONES:
+- RSI entre 10-90 (ultra permisivo)
+- Precio fuera del rango reciente
+GESTIÓN:
+- SL: ATR × 1.5
+- TP: SL × 1.5 (R:R 1.5)
+- Máx: 10 trades/día
+```
 
-#### Market Analysis
-- `/market_overview` - Current market status for all pairs
-- `/chart [symbol] [timeframe]` - Generate professional chart
-- `/pre_market_analysis [symbol]` - Pre-market conditions analysis
-- `/next_opening` - Next major market opening time
+### **XAUUSD Simple**
+```
+SETUP: Reversión en niveles psicológicos
+CONFIRMACIONES:
+- Precio cerca de nivel redondo (±20$)
+- Mecha significativa (>20%)
+GESTIÓN:
+- SL: 10$ fijo
+- TP: 20$ fijo (R:R 2.0)
+- Máx: 8 trades/día
+```
 
-#### Configuration & Monitoring
-- `/autosignals` - Control automatic signal generation
-- `/pairs_config` - View current pair configurations
-- `/demo_stats` - Account statistics and performance
-- `/strategy_performance [days]` - Performance by strategy
-- `/risk_status` - Current risk management status
+### **BTCEUR Mejorado**
+```
+SETUP: Momentum EMA con filtro de tendencia
+CONFIRMACIONES:
+- EMA12 vs EMA26 (señal)
+- EMA50 (filtro de tendencia principal)
+- RSI en rango óptimo (45-75 BUY, 25-55 SELL)
+- Momentum significativo (>1%)
+GESTIÓN:
+- SL: ATR × 2.0
+- TP: SL × 1.5 (R:R 1.5)
+- Máx: 12 trades/día
+```
 
-### Strategy Configuration
+---
 
-The bot uses a sophisticated configuration system in `rules_config.json`:
+## 🤖 Sistema de Auto-Ejecución
 
+### **Configuración Actual**
+```json
+{
+  "enabled": true,
+  "confidence_filter": "LOW",
+  "max_trades_per_period": 5,
+  "period_reset_times": ["00:00", "12:00"],
+  "duplicate_prevention": true,
+  "backtest_mode": true
+}
+```
+
+### **Límites de Seguridad**
+- **5 trades máximo cada 12 horas** (total entre todos los pares)
+- **Reinicio automático** a las 00:00 y 12:00 UTC
+- **Prevención de duplicados** con tolerancia por símbolo:
+  - EURUSD: 10 pips
+  - XAUUSD: 5 dólares
+  - BTCEUR: 100 EUR
+
+### **Flujo de Auto-Ejecución**
+1. **Detección** de señal cada 90 segundos
+2. **Verificación** anti-duplicados
+3. **Verificación** límites por período
+4. **Ejecución inmediata** (modo backtest)
+5. **Registro** en dashboard y logs
+
+---
+
+## 📊 Dashboard y Monitoreo
+
+### **Dashboard Live**
+- **Archivo**: `live_dashboard.html`
+- **Actualización**: Cada 5 minutos
+- **Métricas**: Balance, trades, equity curve, estadísticas
+
+### **Datos Mostrados**
+- ✄1�7 **Balance actual** y evolución
+- ✄1�7 **Trades ejecutados** por sesión
+- ✄1�7 **Estadísticas de rendimiento**
+- ✄1�7 **Señales rechazadas** y razones
+- ✄1�7 **Estado del período** actual
+
+### **Logs del Sistema**
+- **Archivo**: `logs.txt`
+- **Nivel**: INFO (todos los eventos importantes)
+- **Rotación**: Automática por tamaño
+- **Formato**: JSON estructurado + mensajes legibles
+
+---
+
+## 💬 Comandos Discord
+
+### **Comandos de Trading**
+```
+/autosignals          - Ver estado del escaneo automático
+/period_status        - Estado del período actual (5 trades/12h)
+/rejection_stats      - Estadísticas de señales rechazadas
+/comprehensive_stats  - Estadísticas completas del bot
+```
+
+### **Comandos de Control**
+```
+/auto_execution       - Configurar auto-ejecución
+/debug_signals [PAR]  - Debug detallado de estrategia
+/balance             - Ver balance actual MT5
+/positions           - Ver posiciones abiertas
+```
+
+### **Comandos de Análisis**
+```
+/chart [PAR]         - Generar gráfico técnico
+/backtest_summary    - Resumen de backtest
+/live_dashboard      - Estado del dashboard live
+```
+
+---
+
+## ⚙️ Configuración Avanzada
+
+### **Archivo Principal: `rules_config.json`**
+
+#### **Configuración por Par**
 ```json
 {
   "EURUSD": {
-    "strategy": "eurusd_advanced",
-    "fallback_strategy": "ema50_200",
-    "max_daily_trades": 3,
-    "min_rr_ratio": 2.5,
-    "risk_per_trade": 1.2
+    "strategy": "eurusd_simple",
+    "enabled": true,
+    "risk_per_trade": 0.5,
+    "max_daily_trades": 10,
+    "min_rr_ratio": 1.5
   }
 }
 ```
 
-## 🧠 Trading Strategies
+#### **Configuración Global**
+```json
+{
+  "GLOBAL_SETTINGS": {
+    "max_total_risk": 3.0,
+    "max_daily_trades_all": 20,
+    "max_simultaneous_positions": 5,
+    "drawdown_limit": 25.0
+  }
+}
+```
 
-### Primary Strategies
-1. **EURUSD Advanced**: Breakout confirmation with consolidation detection
-2. **XAUUSD Advanced**: Mean reversion at psychological levels
-3. **BTCEUR Advanced**: Momentum-based crypto trading
+#### **Auto-Ejecución**
+```json
+{
+  "auto_execution": {
+    "enabled": true,
+    "max_trades_per_period": 5,
+    "duplicate_check_minutes": 60,
+    "backtest_mode": true
+  }
+}
+```
 
-### Fallback System
-- **Level 1**: Primary advanced strategies
-- **Level 2**: Simple technical indicators (EMA, RSI, MACD)
-- **Level 3**: Emergency fallback (disabled by default for quality control)
-
-### Risk Management
-- **Position Sizing**: Automatic lot calculation based on account balance
-- **Drawdown Protection**: Maximum daily loss limits
-- **Correlation Filters**: Prevent over-exposure to correlated pairs
-- **Session Filters**: Trade only during optimal market hours
-
-## 📊 Performance Features
-
-### Real-time Monitoring
-- Live P&L tracking
-- Win rate statistics
-- Strategy performance comparison
-- Risk metrics dashboard
-
-### Advanced Analytics
-- Multi-timeframe analysis
-- Confluence scoring system
-- Market session optimization
-- Volatility-based filtering
-
-## 🔧 Configuration Files
-
-### Core Files
-- `bot.py` - Main Discord bot and command handlers
-- `signals.py` - Signal detection and strategy implementation
-- `mt5_client.py` - MetaTrader 5 integration
-- `risk_manager.py` - Risk management and position sizing
-- `charts.py` - Professional chart generation
-
-### Advanced Modules
-- `advanced_filters.py` - Confluence and filtering systems
-- `trailing_stops.py` - Automatic profit protection
-- `multi_timeframe.py` - Cross-timeframe analysis
-- `market_opening_system.py` - Session-based alerts
-- `position_manager.py` - Trade execution and management
-
-### Configuration
-- `rules_config.json` - Trading rules and strategy parameters
-- `.env` - Environment variables and sensitive data
-- `requirements.txt` - Python dependencies
-
-## 🚨 Risk Disclaimer
-
-**This software is for educational and research purposes only. Trading financial instruments involves substantial risk of loss and is not suitable for all investors. Past performance does not guarantee future results.**
-
-- Always test on demo accounts first
-- Never risk more than you can afford to lose
-- Understand the strategies before using them
-- Monitor positions regularly
-- Keep MT5 terminal running during trading hours
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## � Licuense
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🆘 Support
-
-- **Issues**: Report bugs via GitHub Issues
-- **Documentation**: Check the `/help` command in Discord
-- **Testing**: Use `/test_fallback` and `/debug_signals` for troubleshooting
-
-## 🔄 Version History
-
-### v2.0.0 (Current)
-- Advanced multi-strategy system
-- Discord slash commands integration
-- Professional chart generation
-- Comprehensive risk management
-- Market opening alerts
-- Trailing stops system
-
-### v1.0.0
-- Basic signal generation
-- MT5 integration
-- Simple Discord commands
+### **Filtros Avanzados**
+Los filtros avanzados están **desactivados** para permitir testing de estrategias básicas:
+```json
+{
+  "advanced_filters": {
+    "enabled": false,
+    "note": "Desactivado para testing de estrategias simplificadas"
+  }
+}
+```
 
 ---
 
-**⚠️ Remember**: This is a powerful trading tool. Always understand the risks involved in automated trading and test thoroughly before using with real money.
+## 📈 Backtesting
+
+### **Sistema Automático**
+- **Tracking**: Todas las señales y ejecuciones
+- **Base de datos**: `bot_state.db` (SQLite)
+- **Métricas**: Win rate, drawdown, profit factor
+- **Exportación**: JSON y dashboard HTML
+
+### **Comandos de Backtest**
+```bash
+# Ver estadísticas
+/backtest_summary
+
+# Dashboard completo
+Abrir: backtest_dashboard.html
+```
+
+### **Métricas Calculadas**
+- ✄1�7 **Total de señales** generadas y ejecutadas
+- ✄1�7 **Win rate** por estrategia y global
+- ✄1�7 **Profit factor** y expectativa
+- ✄1�7 **Drawdown máximo** y actual
+- ✄1�7 **Distribución temporal** de trades
+
+---
+
+## 🔧 Solución de Problemas
+
+### **Problemas Comunes**
+
+#### **1. Bot no ejecuta órdenes**
+```
+Verificar:
+✄1�7 AutoTrading habilitado en MT5 (botón verde)
+✄1�7 Conexión a broker activa
+✄1�7 Saldo suficiente en cuenta
+✄1�7 Variable AUTO_EXECUTE_SIGNALS=1
+```
+
+#### **2. No se generan señales**
+```
+Verificar:
+✄1�7 AUTOSIGNALS=1 en .env
+✄1�7 Pares en AUTOSIGNAL_SYMBOLS
+✄1�7 Estrategias habilitadas en rules_config.json
+✄1�7 No se alcanzó límite de período (5 trades/12h)
+```
+
+#### **3. Señales duplicadas**
+```
+Sistema anti-duplicados activo:
+✄1�7 Tolerancia por símbolo configurada
+✄1�7 Ventana de 60 minutos
+✄1�7 Logs muestran "SEÑAL DUPLICADA DETECTADA"
+```
+
+#### **4. Dashboard no actualiza**
+```
+Verificar:
+✄1�7 Archivo live_dashboard.html existe
+✄1�7 Permisos de escritura en directorio
+✄1�7 Dashboard loop iniciado en logs
+```
+
+### **Logs de Diagnóstico**
+```bash
+# Ver logs en tiempo real
+tail -f logs.txt
+
+# Buscar errores específicos
+grep "ERROR" logs.txt
+
+# Ver señales rechazadas
+grep "SIGNAL REJECTED" logs.txt
+```
+
+### **Reinicio Limpio**
+```bash
+# Parar bot
+Ctrl+C
+
+# Limpiar logs (opcional)
+> logs.txt
+
+# Reiniciar
+python bot.py
+```
+
+---
+
+## 📁 Estructura del Proyecto
+
+### **Archivos Principales**
+```
+bot.py                    # Bot principal Discord + MT5
+signals.py               # Estrategias de trading
+rules_config.json        # Configuración de estrategias
+mt5_client.py           # Cliente MetaTrader 5
+live_dashboard.py       # Dashboard en tiempo real
+```
+
+### **Sistemas Auxiliares**
+```
+risk_manager.py         # Gestión de riesgo
+backtest_tracker.py     # Sistema de backtesting
+rejected_signals_tracker.py  # Tracking de rechazos
+trailing_stops.py       # Trailing stops automáticos
+market_opening_system.py     # Alertas de mercado
+```
+
+### **Utilidades**
+```
+charts.py              # Generación de gráficos
+secrets_store.py       # Gestión segura de credenciales
+user_management.py     # Gestión de usuarios Discord
+commercial_commands.py # Comandos comerciales
+```
+
+### **Configuración**
+```
+.env                   # Variables de entorno
+requirements.txt       # Dependencias Python
+rules_config.json     # Configuración de trading
+bot_state.db          # Base de datos SQLite
+```
+
+---
+
+## 🎯 Estado Actual del Sistema
+
+### **✄1�7 Funcionalidades Operativas**
+- **Auto-ejecución** configurada y funcionando
+- **3 estrategias** optimizadas y probadas
+- **Sistema anti-duplicados** implementado
+- **Límites por período** (5 trades/12h) activos
+- **Dashboard live** con métricas reales
+- **Logging completo** para debugging
+- **Backtest automático** registrando todo
+
+### **🔧 Configuración Actual**
+- **Modo**: Backtest automatizado
+- **Riesgo**: 0.5% por trade
+- **Límites**: 5 trades cada 12 horas (total)
+- **Pares**: EURUSD, XAUUSD, BTCEUR
+- **Filtros**: Básicos (avanzados desactivados)
+
+### **📊 Rendimiento Esperado**
+- **Trades/día**: 5-10 (distribuidos equitativamente)
+- **Win rate objetivo**: 60%+
+- **Drawdown máximo**: <10%
+- **Distribución**: Balanceada entre los 3 pares
+
+---
+
+## 📞 Soporte y Mantenimiento
+
+### **Monitoreo Recomendado**
+1. **Dashboard live** cada pocas horas
+2. **Comando `/period_status`** para verificar límites
+3. **Logs** para identificar problemas
+4. **Balance MT5** para confirmar ejecuciones
+
+### **Mantenimiento Periódico**
+- **Semanal**: Revisar estadísticas de backtest
+- **Mensual**: Optimizar parámetros según resultados
+- **Trimestral**: Evaluar nuevas estrategias
+
+### **Actualizaciones**
+- Estrategias se pueden modificar en `signals.py`
+- Configuración en `rules_config.json`
+- Límites y filtros en tiempo real vía Discord
+
+---
+
+**🚀 El sistema está completamente operativo y listo para backtesting automatizado de largo plazo.**
