@@ -18,8 +18,13 @@ def cleanup_old_logs(days_to_keep=7):
     """
     print(f"🧹 Limpiando archivos de log más antiguos que {days_to_keep} días...")
     
-    # Buscar todos los archivos de log con el formato logs_yyyy-mm-dd_hh-mm-ss.txt
-    log_files = glob.glob("logs_*.txt")
+    # Buscar todos los archivos de log en la carpeta logs/
+    logs_dir = "logs"
+    if not os.path.exists(logs_dir):
+        print("📁 Carpeta logs/ no encontrada")
+        return 0
+    
+    log_files = glob.glob(os.path.join(logs_dir, "logs_*.txt"))
     
     if not log_files:
         print("📝 No se encontraron archivos de log para limpiar")
@@ -72,7 +77,12 @@ def list_log_files():
     print("📝 ARCHIVOS DE LOG DISPONIBLES:")
     print("=" * 60)
     
-    log_files = glob.glob("logs_*.txt")
+    logs_dir = "logs"
+    if not os.path.exists(logs_dir):
+        print("📁 Carpeta logs/ no encontrada")
+        return
+    
+    log_files = glob.glob(os.path.join(logs_dir, "logs_*.txt"))
     
     if not log_files:
         print("📝 No se encontraron archivos de log")

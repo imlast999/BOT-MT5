@@ -53,7 +53,12 @@ CANDLES = 100
 
 # safety / limits
 MAX_TRADES_PER_DAY = int(os.getenv('MAX_TRADES_PER_DAY', '3'))
+MAX_TRADES_PER_PERIOD = int(os.getenv('MAX_TRADES_PER_PERIOD', '5'))  # 5 trades cada 12 horas
 KILL_SWITCH = os.getenv('KILL_SWITCH', '0') == '1'
+
+# auto-execution settings
+AUTO_EXECUTE_SIGNALS = os.getenv('AUTO_EXECUTE_SIGNALS', '0') == '1'
+AUTO_EXECUTE_CONFIDENCE = os.getenv('AUTO_EXECUTE_CONFIDENCE', 'MEDIUM_HIGH')
 
 # structured-ish logging for easier parsing
 logging.basicConfig(
@@ -118,6 +123,98 @@ class BotEventLogger:
     def bot_status(message: str):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 BOT: {message}")
 
+
+# ======================
+# FUNCIONES DE PERÍODO (12 HORAS)
+# ======================
+
+def get_current_period_start() -> datetime:
+    """Obtiene el inicio del período actual (00:00 o 12:00 UTC)"""
+    now = datetime.now(timezone.utc)
+    if now.hour < 12:
+        # Período 00:00-12:00
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        # Período 12:00-24:00
+        return now.replace(hour=12, minute=0, second=0, microsecond=0)
+
+def is_new_period() -> bool:
+    """Verifica si estamos en un nuevo período de 12 horas"""
+    current_period_start = get_current_period_start()
+    return current_period_start > state.current_period_start
+
+def reset_period_if_needed():
+    """Resetea el contador de trades si estamos en un nuevo período"""
+    if is_new_period():
+        old_count = state.trades_current_period
+        state.trades_current_period = 0
+        state.current_period_start = get_current_period_start()
+        
+        period_name = "00:00-12:00" if state.current_period_start.hour == 0 else "12:00-24:00"
+        log_event(f"🔄 NUEVO PERÍODO: {period_name} UTC | Trades resetados: {old_count} → 0", "INFO", "PERIOD")
+
+def get_period_status() -> dict:
+    """Obtiene el estado actual del período"""
+    reset_period_if_needed()  # Verificar si necesitamos resetear
+    
+    period_name = "00:00-12:00" if state.current_period_start.hour == 0 else "12:00-24:00"
+    next_reset = state.current_period_start + timedelta(hours=12)
+    time_until_reset = next_reset - datetime.now(timezone.utc)
+    
+    return {
+        'current_period': period_name,
+        'trades_current_period': state.trades_current_period,
+        'max_trades_per_period': MAX_TRADES_PER_PERIOD,
+        'trades_remaining': max(0, MAX_TRADES_PER_PERIOD - state.trades_current_period),
+        'next_reset': next_reset,
+        'time_until_reset': time_until_reset,
+        'period_full': state.trades_current_period >= MAX_TRADES_PER_PERIOD
+    }
+
+
+# ======================
+# DECORADOR PARA LOGGING DE COMANDOS
+# ======================
+
+def log_discord_command(func):
+    """Decorador para loggear automáticamente comandos Discord"""
+    import functools
+    
+    @functools.wraps(func)
+    async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+        # Obtener nombre del comando
+        command_name = func.__name__.replace('slash_', '')
+        
+        # Construir argumentos para el log
+        args_str = ' '.join(str(arg) for arg in args if arg)
+        kwargs_str = ' '.join(f"{k}={v}" for k, v in kwargs.items() if v)
+        full_args = f"{args_str} {kwargs_str}".strip()
+        
+        # Log inicial del comando
+        log_event(f"🎮 COMMAND: /{command_name} {full_args} | User: {interaction.user.id} ({interaction.user.display_name})")
+        
+        try:
+            # Ejecutar el comando original
+            result = await func(interaction, *args, **kwargs)
+            
+            # Log de éxito (solo si no hubo excepción)
+            log_event(f"✅ COMMAND SUCCESS: /{command_name} {full_args}")
+            return result
+            
+        except Exception as e:
+            # Log de error
+            log_event(f"❌ COMMAND ERROR: /{command_name} {full_args} | Error: {e}")
+            
+            # Re-lanzar la excepción para que Discord la maneje
+            raise
+    
+    return wrapper
+
+
+# ======================
+# LOGGING SYSTEM
+# ======================
+
 bot_logger = BotEventLogger()
 
 # ensure we also write a simple log file for quicker debugging
@@ -128,10 +225,14 @@ def ensure_log_file(log_path: str | None = None, clear_on_start: bool = True):
     from datetime import datetime
     import sys
     
+    # Crear carpeta logs si no existe
+    logs_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    
     # Crear nombre de archivo con timestamp
     if log_path is None:
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        log_path = os.path.join(os.path.dirname(__file__), f'logs_{timestamp}.txt')
+        log_path = os.path.join(logs_dir, f'logs_{timestamp}.txt')
     
     try:
         # Crear archivo con header inicial
@@ -217,6 +318,8 @@ from typing import Dict, Any
 class BotState:
     pending_signals: Dict[int, dict] = field(default_factory=dict)
     trades_today: int = 0
+    trades_current_period: int = 0  # Trades en el período actual (12h)
+    current_period_start: datetime = field(default_factory=lambda: get_current_period_start())
     mt5_credentials: Dict[str, Any] = field(default_factory=dict)
     autosignals: bool = os.getenv('AUTOSIGNALS', '0') == '1'
     last_auto_sent: Dict[str, Any] = field(default_factory=dict)
@@ -807,6 +910,9 @@ async def accept(ctx, signal_id: int):
         del state.pending_signals[signal_id]
         return
 
+    # Verificar límites antes de aceptar
+    reset_period_if_needed()  # Verificar si necesitamos resetear período
+    
     if state.trades_today >= MAX_TRADES_PER_DAY:
         await ctx.send("⛔ Límite de trades diarios alcanzado")
         # BACKTEST TRACKING: Marcar como rechazada por límite
@@ -818,8 +924,24 @@ async def accept(ctx, signal_id: int):
                 logger.error(f"Error actualizando backtest (límite): {e}")
         del state.pending_signals[signal_id]
         return
-    # Incrementar contador y persistir
+    
+    if state.trades_current_period >= MAX_TRADES_PER_PERIOD:
+        period_status = get_period_status()
+        await ctx.send(f"⛔ Límite de período alcanzado ({state.trades_current_period}/{MAX_TRADES_PER_PERIOD})\n"
+                      f"📅 Período actual: {period_status['current_period']} UTC\n"
+                      f"⏰ Próximo reinicio: {period_status['time_until_reset'].total_seconds()/3600:.1f}h")
+        # BACKTEST TRACKING: Marcar como rechazada por límite de período
+        if 'backtest_id' in signal:
+            try:
+                backtest_tracker.update_signal_status(signal['backtest_id'], "REJECTED", 
+                                                    result="PERIOD_LIMIT", notes="Límite de período alcanzado")
+            except Exception as e:
+                logger.error(f"Error actualizando backtest (período): {e}")
+        del state.pending_signals[signal_id]
+        return
+    # Incrementar contadores y persistir
     state.trades_today += 1
+    state.trades_current_period += 1
     try:
         save_trades_today()
     except Exception:
@@ -1141,15 +1263,29 @@ async def _auto_signal_loop():
                             strat = cfg.get('strategy') or strat
                             sig, df2, risk_info = _detect_signal_wrapper(df, symbol=sym)
                             if sig:
+                                # Verificar límites antes de procesar la señal
+                                reset_period_if_needed()
+                                
+                                # Verificar límite diario
+                                if state.trades_today >= MAX_TRADES_PER_DAY:
+                                    log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: Límite diario alcanzado ({state.trades_today}/{MAX_TRADES_PER_DAY})")
+                                    continue
+                                
+                                # Verificar límite de período
+                                if state.trades_current_period >= MAX_TRADES_PER_PERIOD:
+                                    period_status = get_period_status()
+                                    log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: Límite de período alcanzado ({state.trades_current_period}/{MAX_TRADES_PER_PERIOD}) - Período: {period_status['current_period']}")
+                                    continue
+                                
                                 signals_found += 1
                                 # fingerprint the signal by type and raw prices
                                 fingerprint = (sig.get('type'), float(sig.get('entry', 0)), float(sig.get('sl', 0)), float(sig.get('tp', 0)))
                                 # if identical (within tolerance in pips) to last sent and within longer cooldown, skip
-                                if last_sig and signals_similar(sig, last_sig, AUTOSIGNAL_TOLERANCE_PIPS, sym) and last_time and (now - last_time) < timedelta(seconds=AUTOSIGNAL_INTERVAL * 10):
-                                    logger.debug('Skipping duplicate auto-signal for %s (recent identical within tolerance)', sym)
+                                if last_sig and signals_similar(sig, last_sig, AUTOSIGNAL_TOLERANCE_PIPS, sym) and last_time and (now - last_time) < timedelta(seconds=AUTOSIGNAL_INTERVAL * 20):  # Aumentado de 10 a 20
+                                    log_event(f"🔄 SIGNAL DUPLICATE: {sym} | Skipping identical signal within tolerance (last: {(now - last_time).total_seconds():.0f}s ago)")
                                     # update last sent time to avoid tight loops
-                                    save_last_auto_sent(sym, now, last_sig)
-                                    state.last_auto_sent[sym] = {'time': now, 'sig': last_sig}
+                                    save_last_auto_sent(sym, now, fingerprint)
+                                    state.last_auto_sent[sym] = {'time': now, 'sig': fingerprint}
                                     continue
 
                                 sid = max(state.pending_signals.keys(), default=0) + 1
@@ -1433,6 +1569,7 @@ async def slash_close_positions_ui(interaction: discord.Interaction):
 
 @bot.tree.command(name="signal")
 @discord.app_commands.describe(symbol="Símbolo/activo (ej: EURUSD, BTCUSDT). Si se omite usa DEFAULT_STRATEGY simbolo por defecto en .env")
+@log_discord_command
 async def slash_signal(interaction: discord.Interaction, symbol: str = ''):
     """Detecta una señal usando MT5 y publica la propuesta (solo admin)."""
     if interaction.user.id != AUTHORIZED_USER_ID:
@@ -1667,7 +1804,11 @@ async def slash_signal(interaction: discord.Interaction, symbol: str = ''):
 @discord.app_commands.describe(symbol="Símbolo/activo (ej: EURUSD, XAUUSD, BTCEUR)", timeframe="Timeframe (M1,M5,M15,M30,H1,H4,D1)", candles="Número de velas a mostrar")
 async def slash_chart(interaction: discord.Interaction, symbol: str = 'EURUSD', timeframe: str = 'H1', candles: int = 100):
     """Genera un gráfico PNG con las últimas velas (solo admin)."""
+    # Log del comando ejecutado
+    log_event(f"🎮 COMMAND: /chart {symbol} {timeframe} {candles} | User: {interaction.user.id} ({interaction.user.display_name})")
+    
     if interaction.user.id != AUTHORIZED_USER_ID:
+        log_event(f"❌ COMMAND REJECTED: /chart | User: {interaction.user.id} | Reason: No autorizado")
         await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
         return
 
@@ -1675,6 +1816,7 @@ async def slash_chart(interaction: discord.Interaction, symbol: str = 'EURUSD', 
     # restrict charts to symbols that have rules (only show charts for these pairs)
     ALLOWED = ['EURUSD','XAUUSD','BTCEUR']
     if symbol not in ALLOWED:
+        log_event(f"❌ COMMAND REJECTED: /chart | Symbol: {symbol} | Reason: Símbolo no soportado")
         await interaction.response.send_message(f"Símbolo no soportado o no disponible: {symbol}", ephemeral=True)
         return
 
@@ -1705,6 +1847,7 @@ async def slash_chart(interaction: discord.Interaction, symbol: str = 'EURUSD', 
     try:
         filename = generate_chart(df, symbol=symbol, title=f"{symbol} {timeframe}")
         await interaction.followup.send("📊 Gráfico actual", file=discord.File(filename))
+        log_event(f"✅ COMMAND SUCCESS: /chart {symbol} {timeframe} | Chart generated and sent")
         # remove file after sending to avoid stale reuse
         try:
             import os
@@ -1712,6 +1855,7 @@ async def slash_chart(interaction: discord.Interaction, symbol: str = 'EURUSD', 
         except Exception:
             pass
     except Exception as e:
+        log_event(f"❌ COMMAND ERROR: /chart {symbol} {timeframe} | Error: {e}")
         await interaction.followup.send(f"❌ Error generando gráfico: {e}")
 
 
@@ -1763,6 +1907,7 @@ async def slash_scan(interaction: discord.Interaction, symbols: str = '', strate
 
 
 @bot.tree.command(name="autosignals")
+@log_discord_command
 async def slash_autosignals(interaction: discord.Interaction):
     """Muestra estado detallado de las señales automáticas con controles."""
     if interaction.user.id != AUTHORIZED_USER_ID:
@@ -2824,6 +2969,7 @@ async def slash_mt5_login(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="accept")
+@log_discord_command
 async def slash_accept(interaction: discord.Interaction, signal_id: int):
     """Aceptar una señal pendiente por ID (slash)."""
     if interaction.user.id != AUTHORIZED_USER_ID:
@@ -2961,6 +3107,7 @@ async def slash_accept(interaction: discord.Interaction, signal_id: int):
 
 
 @bot.tree.command(name="reject")
+@log_discord_command
 async def slash_reject(interaction: discord.Interaction, signal_id: int):
     """Rechaza una señal pendiente por ID (slash)."""
     if interaction.user.id != AUTHORIZED_USER_ID:
@@ -3632,6 +3779,289 @@ async def slash_opening_alerts(interaction: discord.Interaction, enabled: str = 
         )
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="period_status")
+@log_discord_command
+async def slash_period_status(interaction: discord.Interaction):
+    """Muestra el estado del período actual (5 trades/12h) (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        period_status = get_period_status()
+        
+        embed = discord.Embed(
+            title="📊 Estado del Período Actual",
+            description="Sistema de límites por período (12 horas)",
+            color=0xff6b6b if period_status['period_full'] else 0x00ff88
+        )
+        
+        # Estado actual
+        embed.add_field(
+            name="⏰ **Período Actual**",
+            value=f"**{period_status['current_period']} UTC**",
+            inline=True
+        )
+        
+        # Trades utilizados
+        trades_used = period_status['trades_current_period']
+        max_trades = period_status['max_trades_per_period']
+        progress_bar = "🟩" * trades_used + "⬜" * (max_trades - trades_used)
+        
+        embed.add_field(
+            name="📈 **Trades Utilizados**",
+            value=f"**{trades_used}/{max_trades}**\n{progress_bar}",
+            inline=True
+        )
+        
+        # Trades restantes
+        embed.add_field(
+            name="🎯 **Trades Restantes**",
+            value=f"**{period_status['trades_remaining']}**",
+            inline=True
+        )
+        
+        # Próximo reinicio
+        hours_until = period_status['time_until_reset'].total_seconds() / 3600
+        embed.add_field(
+            name="🔄 **Próximo Reinicio**",
+            value=(
+                f"**{period_status['next_reset'].strftime('%H:%M')} UTC**\n"
+                f"En {hours_until:.1f} horas"
+            ),
+            inline=True
+        )
+        
+        # Estado
+        status_emoji = "🔴 COMPLETO" if period_status['period_full'] else "🟢 DISPONIBLE"
+        embed.add_field(
+            name="🚦 **Estado**",
+            value=status_emoji,
+            inline=True
+        )
+        
+        # Información adicional
+        embed.add_field(
+            name="ℹ️ **Información**",
+            value=(
+                "• Los períodos se reinician cada 12 horas\n"
+                "• Horarios: 00:00-12:00 y 12:00-24:00 UTC\n"
+                "• Límite independiente del límite diario"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Trades diarios: {state.trades_today}/{MAX_TRADES_PER_DAY}")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo estado del período: {e}")
+
+
+@bot.tree.command(name="backtest_summary")
+@log_discord_command
+async def slash_backtest_summary(interaction: discord.Interaction):
+    """Muestra resumen completo del backtest automático (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        # Obtener estadísticas del backtest tracker
+        stats = backtest_tracker.get_comprehensive_stats()
+        
+        embed = discord.Embed(
+            title="📊 Resumen de Backtest Automático",
+            description="Estadísticas completas del sistema de backtesting",
+            color=0x00ff88
+        )
+        
+        # Estadísticas generales
+        total_signals = stats.get('total_signals', 0)
+        executed_signals = stats.get('executed_signals', 0)
+        win_rate = stats.get('win_rate', 0)
+        
+        embed.add_field(
+            name="📈 **Señales Totales**",
+            value=f"**{total_signals}**",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="✅ **Ejecutadas**",
+            value=f"**{executed_signals}**",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎯 **Win Rate**",
+            value=f"**{win_rate:.1f}%**",
+            inline=True
+        )
+        
+        # Rendimiento por símbolo
+        symbol_stats = stats.get('by_symbol', {})
+        if symbol_stats:
+            symbol_text = ""
+            for symbol, data in symbol_stats.items():
+                symbol_text += f"**{symbol}:** {data.get('executed', 0)} trades, {data.get('win_rate', 0):.1f}% WR\n"
+            
+            embed.add_field(
+                name="📊 **Por Símbolo**",
+                value=symbol_text or "Sin datos",
+                inline=False
+            )
+        
+        # Profit Factor y Expectancy
+        profit_factor = stats.get('profit_factor', 0)
+        expectancy = stats.get('expectancy', 0)
+        
+        embed.add_field(
+            name="💰 **Profit Factor**",
+            value=f"**{profit_factor:.2f}**",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📊 **Expectancy**",
+            value=f"**{expectancy:.2f}**",
+            inline=True
+        )
+        
+        # Drawdown
+        max_drawdown = stats.get('max_drawdown', 0)
+        current_drawdown = stats.get('current_drawdown', 0)
+        
+        embed.add_field(
+            name="📉 **Drawdown**",
+            value=f"Actual: **{current_drawdown:.1f}%**\nMáximo: **{max_drawdown:.1f}%**",
+            inline=True
+        )
+        
+        # Información del dashboard
+        embed.add_field(
+            name="🌐 **Dashboard Live**",
+            value=(
+                f"📁 Archivo: `live_dashboard.html`\n"
+                f"🔄 Actualización: Cada 5 minutos\n"
+                f"📊 Métricas: Balance, trades, equity curve"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo resumen de backtest: {e}")
+
+
+@bot.tree.command(name="live_dashboard")
+@log_discord_command
+async def slash_live_dashboard(interaction: discord.Interaction):
+    """Muestra estado del dashboard live y métricas en tiempo real (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        # Verificar si el archivo existe
+        dashboard_path = "live_dashboard.html"
+        dashboard_exists = os.path.exists(dashboard_path)
+        
+        embed = discord.Embed(
+            title="🌐 Estado del Dashboard Live",
+            description="Información del dashboard en tiempo real",
+            color=0x00ff88 if dashboard_exists else 0xff6b6b
+        )
+        
+        # Estado del archivo
+        if dashboard_exists:
+            file_size = os.path.getsize(dashboard_path)
+            file_size_kb = file_size / 1024
+            last_modified = datetime.fromtimestamp(os.path.getmtime(dashboard_path))
+            
+            embed.add_field(
+                name="📁 **Archivo**",
+                value=(
+                    f"✅ **Existe:** `{dashboard_path}`\n"
+                    f"📊 **Tamaño:** {file_size_kb:.1f} KB\n"
+                    f"🕒 **Modificado:** {last_modified.strftime('%H:%M:%S')}"
+                ),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📁 **Archivo**",
+                value=f"❌ **No encontrado:** `{dashboard_path}`",
+                inline=False
+            )
+        
+        # Métricas actuales del bot
+        embed.add_field(
+            name="🤖 **Bot Stats**",
+            value=(
+                f"📈 **Trades hoy:** {state.trades_today}/{MAX_TRADES_PER_DAY}\n"
+                f"⏰ **Período:** {state.trades_current_period}/{MAX_TRADES_PER_PERIOD}\n"
+                f"🎯 **Señales pendientes:** {len(state.pending_signals)}"
+            ),
+            inline=True
+        )
+        
+        # Estado de autosignals
+        embed.add_field(
+            name="🔄 **Autosignals**",
+            value=(
+                f"{'🟢 ACTIVO' if state.autosignals else '🔴 INACTIVO'}\n"
+                f"**Símbolos:** {', '.join(AUTOSIGNAL_SYMBOLS)}\n"
+                f"**Intervalo:** {AUTOSIGNAL_INTERVAL}s"
+            ),
+            inline=True
+        )
+        
+        # Configuración del dashboard
+        embed.add_field(
+            name="⚙️ **Configuración**",
+            value=(
+                "🔄 **Auto-refresh:** 5 minutos\n"
+                "📊 **Métricas:** Balance, trades, equity\n"
+                "📈 **Gráficos:** Rendimiento por símbolo\n"
+                "🕒 **Histórico:** Últimas 24 horas"
+            ),
+            inline=False
+        )
+        
+        # Instrucciones de acceso
+        embed.add_field(
+            name="🌐 **Acceso**",
+            value=(
+                f"1. Abrir archivo: `{dashboard_path}`\n"
+                "2. Usar navegador web\n"
+                "3. Se actualiza automáticamente cada 5 min\n"
+                "4. Compatible con todos los navegadores"
+            ),
+            inline=False
+        )
+        
+        if dashboard_exists:
+            embed.set_footer(text="✅ Dashboard operativo - Actualización automática activa")
+        else:
+            embed.set_footer(text="❌ Dashboard no disponible - Verificar sistema")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo estado del dashboard: {e}")
 
 
 # ======================

@@ -38,25 +38,37 @@ class BacktestTracker:
     
     def add_signal(self, signal_data: Dict):
         """Registra una nueva señal"""
+        
+        # Función para convertir pandas Series y otros tipos no serializables
+        def make_serializable(value):
+            if hasattr(value, 'iloc'):  # pandas Series
+                return float(value.iloc[0]) if len(value) > 0 else None
+            elif hasattr(value, 'item'):  # numpy types
+                return value.item()
+            elif isinstance(value, (int, float, str, bool, type(None))):
+                return value
+            else:
+                return str(value)
+        
         signal_entry = {
             "id": len(self.signals_data["signals"]) + 1,
             "timestamp": datetime.now().isoformat(),
-            "symbol": signal_data.get("symbol"),
-            "direction": signal_data.get("direction"),
-            "entry_price": signal_data.get("entry_price"),
-            "stop_loss": signal_data.get("stop_loss"),
-            "take_profit": signal_data.get("take_profit"),
-            "confidence": signal_data.get("confidence"),
-            "strategy": signal_data.get("strategy"),
-            "risk_reward": signal_data.get("risk_reward"),
-            "lot_size": signal_data.get("lot_size"),
+            "symbol": make_serializable(signal_data.get("symbol")),
+            "direction": make_serializable(signal_data.get("direction")),
+            "entry_price": make_serializable(signal_data.get("entry_price")),
+            "stop_loss": make_serializable(signal_data.get("stop_loss")),
+            "take_profit": make_serializable(signal_data.get("take_profit")),
+            "confidence": make_serializable(signal_data.get("confidence")),
+            "strategy": make_serializable(signal_data.get("strategy")),
+            "risk_reward": make_serializable(signal_data.get("risk_reward")),
+            "lot_size": make_serializable(signal_data.get("lot_size")),
             "status": "PENDING",  # PENDING, ACCEPTED, REJECTED, CLOSED
             "result": None,  # WIN, LOSS, BREAKEVEN
             "profit_loss": None,
             "close_price": None,
             "close_time": None,
             "duration_minutes": None,
-            "notes": signal_data.get("notes", "")
+            "notes": make_serializable(signal_data.get("notes", ""))
         }
         
         self.signals_data["signals"].append(signal_entry)

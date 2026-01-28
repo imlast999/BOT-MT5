@@ -43,14 +43,33 @@ def _ema_strategy(df: pd.DataFrame, config: dict | None = None):
     span_slow = int(cfg.get('ema_slow', 200))
 
     df = df.copy()
+    
+    # Verificar datos suficientes
+    if len(df) < 200:
+        return None, df
+    
     df[f'ema{span_fast}'] = df['close'].ewm(span=span_fast).mean()
     df[f'ema{span_slow}'] = df['close'].ewm(span=span_slow).mean()
+    df['rsi'] = _rsi(df['close'], 14)
 
     last_fast = df[f'ema{span_fast}'].iloc[-1]
     last_slow = df[f'ema{span_slow}'].iloc[-1]
     price = float(df['close'].iloc[-1])
-
-    if last_fast > last_slow:
+    last_rsi = df['rsi'].iloc[-1]
+    
+    # Filtros adicionales para evitar señales en retrocesos
+    # Verificar que el precio esté cerca de las EMAs (no muy alejado)
+    ema_distance = abs(price - last_fast) / price
+    if ema_distance > 0.002:  # Más del 0.2% de distancia = posible retroceso
+        return None, df
+    
+    # Verificar momentum con RSI
+    if last_fast > last_slow and last_rsi > 45 and last_rsi < 75:  # Evitar sobrecompra
+        # Verificar que no sea un retroceso fuerte
+        recent_high = df['high'].tail(10).max()
+        if price < recent_high * 0.998:  # Precio más del 0.2% por debajo del máximo reciente
+            return None, df  # Posible retroceso
+            
         sig = {
             'symbol': df.get('symbol', SYMBOL),
             'type': 'BUY',
@@ -58,13 +77,19 @@ def _ema_strategy(df: pd.DataFrame, config: dict | None = None):
             'sl': price - float(cfg.get('sl_distance', 0.0020)),
             'tp': price + float(cfg.get('tp_distance', 0.0040)),
             'timeframe': None,
-            'explanation': f'EMA{span_fast} > EMA{span_slow}',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
+            'explanation': f'Fallback: EMA{span_fast} > EMA{span_slow} + RSI {last_rsi:.1f} + Filtros',
+            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes),
+            'confidence': 'MEDIUM'
         }
         logger.debug('EMA rule produced BUY signal: %s', sig)
         return sig, df
 
-    if last_fast < last_slow:
+    if last_fast < last_slow and last_rsi < 55 and last_rsi > 25:  # Evitar sobreventa
+        # Verificar que no sea un retroceso fuerte
+        recent_low = df['low'].tail(10).min()
+        if price > recent_low * 1.002:  # Precio más del 0.2% por encima del mínimo reciente
+            return None, df  # Posible retroceso
+            
         sig = {
             'symbol': df.get('symbol', SYMBOL),
             'type': 'SELL',
@@ -72,11 +97,14 @@ def _ema_strategy(df: pd.DataFrame, config: dict | None = None):
             'sl': price + float(cfg.get('sl_distance', 0.0020)),
             'tp': price - float(cfg.get('tp_distance', 0.0040)),
             'timeframe': None,
-            'explanation': f'EMA{span_fast} < EMA{span_slow}',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
+            'explanation': f'Fallback: EMA{span_fast} < EMA{span_slow} + RSI {last_rsi:.1f} + Filtros',
+            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes),
+            'confidence': 'MEDIUM'
         }
         logger.debug('EMA rule produced SELL signal: %s', sig)
         return sig, df
+
+    return None, df
 
     return None, df
 
@@ -922,12 +950,18 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     df['ema50'] = df['close'].ewm(span=50).mean()
     df['ema200'] = df['close'].ewm(span=200).mean()
     
-    # Niveles psicológicos del oro (cada $50)
-    psychological_levels = cfg.get('psychological_levels', [1900, 1950, 2000, 2050, 2100, 2150])
+    # Niveles psicológicos dinámicos del oro (cada $50)
+    # Según especificación: levels = round(price / 50) * 50
+    closest_level = round(price / 50) * 50
+    distance_to_level = abs(price - closest_level)
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
     price = float(last['close'])
+    
+    # Recalcular con el precio correcto
+    closest_level = round(price / 50) * 50
+    distance_to_level = abs(price - closest_level)
     
     # Calcular tamaño de mecha
     candle_range = last['high'] - last['low']
@@ -935,10 +969,6 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     lower_wick = min(last['open'], last['close']) - last['low']
     upper_wick_pct = (upper_wick / candle_range) * 100 if candle_range > 0 else 0
     lower_wick_pct = (lower_wick / candle_range) * 100 if candle_range > 0 else 0
-    
-    # Encontrar el nivel psicológico más cercano
-    closest_level = min(psychological_levels, key=lambda x: abs(price - x))
-    distance_to_level = abs(price - closest_level)
     
     # Señal de compra: Reversión alcista cerca de nivel psicológico
     if (distance_to_level <= 10 and  # ±8-10$ del nivel psicológico
@@ -1014,40 +1044,56 @@ def btceur_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     prev = df.iloc[-2]
     price = float(last['close'])
     
-    # Señal de compra: EMA12/26 cross alcista + filtros
-    if (last['ema12'] > last['ema26'] and  # Cross alcista EMA12 > EMA26
-        prev['ema12'] <= prev['ema26'] and  # Cross reciente
-        last['ema12'] > last['ema50'] and  # EMA12 > EMA50 (filtro de tendencia)
-        last['rsi'] > 50):  # RSI direccional alcista
+    # Señal de compra: EMA12 > EMA26 + filtros de estructura
+    if (last['ema12'] > last['ema26'] and  # EMA12 > EMA26 (momentum tendencial)
+        last['ema12'] > last['ema50'] and  # Filtro de estructura: EMA12 > EMA50
+        last['rsi'] > 50):  # Fuerza mínima: RSI > 50
         
-        # Calcular niveles
+        # Verificar que no esté en lateral (EMA50 plana)
+        ema50_slope = (last['ema50'] - df['ema50'].iloc[-5]) / 5
+        if abs(ema50_slope) < 0.0001:  # EMA50 muy plana = lateral
+            return None, df
+        
+        # Verificar ATR mínimo (no entrar si ATR bajo)
         atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
+        if atr_value < 50:  # ATR muy bajo = mercado muerto
+            return None, df
+        
+        # Calcular niveles según especificación
         sl_distance = atr_value * 2.5
-        tp_distance = sl_distance * 2.5
+        tp_distance = sl_distance * 2.5  # TP = SL × 2.5
         
         signal = {
             'symbol': 'BTCEUR',
             'type': 'BUY',
             'entry': price,
             'sl': price - sl_distance,
-            'tp': price + tp_distance,
-            'explanation': f'BTCEUR: Cross alcista EMA12/26 + EMA50 filtro + RSI direccional ({last["rsi"]:.1f})',
+            'tp': price + tp_distance,  # CORREGIDO: era price - tp_distance
+            'explanation': f'BTCEUR: EMA12>EMA26+EMA50 + RSI {last["rsi"]:.1f} + ATR {atr_value:.0f}',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 90))),
-            'confidence': 'HIGH' if last['rsi'] > 60 else 'MEDIUM',
+            'confidence': 'HIGH' if last['rsi'] > 60 and ema50_slope > 0.0002 else 'MEDIUM',
             'strategy': 'btceur_advanced'
         }
         return signal, df
     
-    # Señal de venta: EMA12/26 cross bajista + filtros
-    if (last['ema12'] < last['ema26'] and  # Cross bajista EMA12 < EMA26
-        prev['ema12'] >= prev['ema26'] and  # Cross reciente
-        last['ema12'] < last['ema50'] and  # EMA12 < EMA50 (filtro de tendencia)
-        last['rsi'] < 50):  # RSI direccional bajista
+    # Señal de venta: EMA12 < EMA26 + filtros de estructura
+    if (last['ema12'] < last['ema26'] and  # EMA12 < EMA26 (momentum tendencial bajista)
+        last['ema12'] < last['ema50'] and  # Filtro de estructura: EMA12 < EMA50
+        last['rsi'] < 50):  # Fuerza mínima: RSI < 50
         
-        # Calcular niveles
+        # Verificar que no esté en lateral (EMA50 plana)
+        ema50_slope = (last['ema50'] - df['ema50'].iloc[-5]) / 5
+        if abs(ema50_slope) < 0.0001:  # EMA50 muy plana = lateral
+            return None, df
+        
+        # Verificar ATR mínimo (no entrar si ATR bajo)
         atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
+        if atr_value < 50:  # ATR muy bajo = mercado muerto
+            return None, df
+        
+        # Calcular niveles según especificación
         sl_distance = atr_value * 2.5
-        tp_distance = sl_distance * 2.5
+        tp_distance = sl_distance * 2.5  # TP = SL × 2.5
         
         signal = {
             'symbol': 'BTCEUR',
@@ -1055,9 +1101,9 @@ def btceur_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price + sl_distance,
             'tp': price - tp_distance,
-            'explanation': f'BTCEUR: Cross bajista EMA12/26 + EMA50 filtro + RSI direccional ({last["rsi"]:.1f})',
+            'explanation': f'BTCEUR: EMA12<EMA26+EMA50 + RSI {last["rsi"]:.1f} + ATR {atr_value:.0f}',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 90))),
-            'confidence': 'HIGH' if last['rsi'] < 40 else 'MEDIUM',
+            'confidence': 'HIGH' if last['rsi'] < 40 and ema50_slope < -0.0002 else 'MEDIUM',
             'strategy': 'btceur_advanced'
         }
         return signal, df

@@ -39,9 +39,8 @@
       "close_time": null,
       "duration_minutes": null,
       "notes": "Test signal"
-    }
-  ],
-  "metadata": {
-    "created": "2026-01-27T23:52:17.058855"
-  }
-}
+    },
+    {
+      "id": 3,
+      "timestamp": "2026-01-28T00:42:23.423443",
+      "symbol": 
