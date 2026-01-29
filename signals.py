@@ -3,16 +3,17 @@ import pandas as pd
 import numpy as np
 import logging
 
+# Configurar logger primero
+logger = logging.getLogger(__name__)
+
 # Importar nuevos sistemas avanzados
 try:
-    from advanced_filters import create_advanced_filter_system
+    from trading_filters import ConsolidatedTradingFilter
     from multi_timeframe import create_multi_timeframe_analyzer
     ADVANCED_SYSTEMS_AVAILABLE = True
 except ImportError as e:
     logger.warning(f"Sistemas avanzados no disponibles: {e}")
     ADVANCED_SYSTEMS_AVAILABLE = False
-
-logger = logging.getLogger(__name__)
 
 SYMBOL = "EURUSD"
 
@@ -21,7 +22,7 @@ RULES = {}
 
 # Instancias globales de sistemas avanzados (si están disponibles)
 if ADVANCED_SYSTEMS_AVAILABLE:
-    advanced_filter_system = create_advanced_filter_system()
+    advanced_filter_system = ConsolidatedTradingFilter()
     multi_timeframe_analyzer = create_multi_timeframe_analyzer()
 else:
     advanced_filter_system = None
@@ -208,7 +209,7 @@ def _macd_strategy(df: pd.DataFrame, config: dict | None = None):
     return None, df
 
 
-def detect_signal_advanced(df: pd.DataFrame, strategy: str = 'ema50_200', config: dict | None = None, current_balance: float = 5000.0):
+def detect_signal_advanced(df: pd.DataFrame, strategy: str = 'ema50_200', config: dict | None = None, current_balance: float = 5000.0, symbol: str = 'EURUSD'):
     """
     Versión avanzada de detect_signal con todos los filtros y mejoras
     Returns (signal_dict or None, df_with_indicators, filter_info).
@@ -225,8 +226,16 @@ def detect_signal_advanced(df: pd.DataFrame, strategy: str = 'ema50_200', config
         
         # 2. Aplicar filtros avanzados (si están disponibles)
         if ADVANCED_SYSTEMS_AVAILABLE and advanced_filter_system:
+            # Obtener balance de la cuenta
+            try:
+                import MetaTrader5 as mt5
+                account_info = mt5.account_info()
+                account_balance = account_info.balance if account_info else 10000.0  # Default fallback
+            except Exception:
+                account_balance = 10000.0  # Default fallback
+            
             filter_passed, filter_reason, filter_info = advanced_filter_system.apply_all_filters(
-                df_with_indicators, basic_signal, current_balance
+                df_with_indicators, basic_signal, account_balance
             )
             
             if not filter_passed:
@@ -377,6 +386,25 @@ def _rsi(series: pd.Series, period: int = 14):
     down = -delta.clip(upper=0).ewm(alpha=1/period, adjust=False).mean()
     rs = up / down.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
+
+
+def _atr(df: pd.DataFrame, period: int = 14):
+    """
+    Calcula el Average True Range (ATR)
+    """
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    # True Range calculation
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = true_range.rolling(window=period).mean()
+    
+    return atr
 
 
 def _macd_indicators(close: pd.Series, fast=12, slow=26, signal=9):
@@ -936,8 +964,14 @@ def eurusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
 @register_rule('xauusd_advanced')
 def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     """
-    Estrategia XAUUSD: Reversión psicológica ±8-10$ del nivel + EMA50/EMA200 + Mecha ≥30%
-    Implementación exacta según especificaciones del README
+    Estrategia XAUUSD MEJORADA: Más selectiva, menos spam, mayor calidad
+    
+    MEJORAS IMPLEMENTADAS:
+    - Filtro de volatilidad mínima
+    - Verificación de desplazamiento real
+    - Evitar mercado lateral
+    - Filtros de impulso
+    - Mayor selectividad en niveles
     """
     cfg = config or {}
     df = df.copy()
@@ -949,19 +983,46 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     # Indicadores requeridos
     df['ema50'] = df['close'].ewm(span=50).mean()
     df['ema200'] = df['close'].ewm(span=200).mean()
-    
-    # Niveles psicológicos dinámicos del oro (cada $50)
-    # Según especificación: levels = round(price / 50) * 50
-    closest_level = round(price / 50) * 50
-    distance_to_level = abs(price - closest_level)
+    df['atr'] = _atr(df, 14)  # ATR para filtros de volatilidad
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
     price = float(last['close'])
+    atr_current = last['atr']
+    atr_mean = df['atr'].tail(20).mean()  # ATR promedio últimas 20 velas
     
-    # Recalcular con el precio correcto
+    # 🧩 FILTRO 1: VOLATILIDAD MÍNIMA
+    candle_range = last['high'] - last['low']
+    if candle_range < 8.0:  # Mínimo 8 puntos de rango en la vela
+        logger.debug(f"XAUUSD rejected: Low volatility candle ({candle_range:.1f} < 8.0)")
+        return None, df
+    
+    # 🧩 FILTRO 2: ATR MÍNIMO (evitar mercado muerto)
+    if atr_current < atr_mean * 0.7:  # ATR debe ser al menos 70% del promedio
+        logger.debug(f"XAUUSD rejected: Low volatility regime (ATR: {atr_current:.1f} < {atr_mean*0.7:.1f})")
+        return None, df
+    
+    # 🧩 FILTRO 3: EVITAR MERCADO LATERAL
+    ema_separation = abs(last['ema50'] - last['ema200'])
+    if ema_separation < atr_current * 0.4:  # EMAs demasiado juntas = lateral
+        logger.debug(f"XAUUSD rejected: Sideways market (EMA separation: {ema_separation:.1f} < {atr_current*0.4:.1f})")
+        return None, df
+    
+    # 🧩 FILTRO 4: DESPLAZAMIENTO REAL OBLIGATORIO
+    price_move = abs(price - prev['close'])
+    if price_move < atr_current * 0.3:  # Movimiento mínimo requerido
+        logger.debug(f"XAUUSD rejected: No real price displacement ({price_move:.1f} < {atr_current*0.3:.1f})")
+        return None, df
+    
+    # Niveles psicológicos dinámicos - MÁS SELECTIVOS
     closest_level = round(price / 50) * 50
     distance_to_level = abs(price - closest_level)
+    
+    # 🧩 FILTRO 5: PROXIMIDAD MÁS ESTRICTA A NIVELES
+    # Solo operar si estamos MUY cerca del nivel (máximo 8 puntos)
+    if distance_to_level > 8.0:
+        logger.debug(f"XAUUSD rejected: Too far from psychological level ({distance_to_level:.1f} > 8.0)")
+        return None, df
     
     # Calcular tamaño de mecha
     candle_range = last['high'] - last['low']
@@ -970,16 +1031,20 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     upper_wick_pct = (upper_wick / candle_range) * 100 if candle_range > 0 else 0
     lower_wick_pct = (lower_wick / candle_range) * 100 if candle_range > 0 else 0
     
-    # Señal de compra: Reversión alcista cerca de nivel psicológico
-    if (distance_to_level <= 10 and  # ±8-10$ del nivel psicológico
-        price < closest_level and  # Precio por debajo del nivel (para reversión alcista)
-        last['ema50'] > last['ema200'] and  # EMA50 > EMA200 (tendencia alcista)
-        lower_wick_pct >= 30 and  # Mecha inferior ≥30%
-        last['close'] > last['open']):  # Vela alcista de reversión
+    # 🧩 SEÑAL DE COMPRA: Reversión alcista MÁS SELECTIVA
+    if (distance_to_level <= 8.0 and  # ±8$ del nivel psicológico (más estricto)
+        price < closest_level and  # Precio por debajo del nivel
+        last['ema50'] > last['ema200'] and  # Tendencia alcista
+        lower_wick_pct >= 35 and  # Mecha inferior ≥35% (más estricto)
+        last['close'] > last['open'] and  # Vela alcista
+        candle_range >= 10.0):  # Vela con rango mínimo de 10 puntos
         
         # Niveles fijos para oro
-        sl_distance = 12.0  # $12 SL
-        tp_distance = 24.0  # $24 TP
+        sl_distance = 12.0
+        tp_distance = 24.0
+        
+        # Determinar confianza de forma más estricta
+        confidence = 'HIGH' if (distance_to_level <= 4 and lower_wick_pct >= 45) else 'MEDIUM'
         
         signal = {
             'symbol': 'XAUUSD',
@@ -987,23 +1052,29 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price - sl_distance,
             'tp': price + tp_distance,
-            'explanation': f'XAUUSD: Reversión alcista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {lower_wick_pct:.1f}%',
+            'explanation': f'XAUUSD SELECTIVE: Reversión alcista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {lower_wick_pct:.1f}%, ATR {atr_current:.1f}',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 60))),
-            'confidence': 'HIGH' if distance_to_level <= 5 else 'MEDIUM',
+            'confidence': confidence,
             'strategy': 'xauusd_advanced'
         }
+        
+        logger.info(f"XAUUSD BUY signal generated: Level distance {distance_to_level:.1f}, Wick {lower_wick_pct:.1f}%, Confidence {confidence}")
         return signal, df
     
-    # Señal de venta: Reversión bajista cerca de nivel psicológico
-    if (distance_to_level <= 10 and  # ±8-10$ del nivel psicológico
-        price > closest_level and  # Precio por encima del nivel (para reversión bajista)
-        last['ema50'] < last['ema200'] and  # EMA50 < EMA200 (tendencia bajista)
-        upper_wick_pct >= 30 and  # Mecha superior ≥30%
-        last['close'] < last['open']):  # Vela bajista de reversión
+    # 🧩 SEÑAL DE VENTA: Reversión bajista MÁS SELECTIVA
+    if (distance_to_level <= 8.0 and  # ±8$ del nivel psicológico (más estricto)
+        price > closest_level and  # Precio por encima del nivel
+        last['ema50'] < last['ema200'] and  # Tendencia bajista
+        upper_wick_pct >= 35 and  # Mecha superior ≥35% (más estricto)
+        last['close'] < last['open'] and  # Vela bajista
+        candle_range >= 10.0):  # Vela con rango mínimo de 10 puntos
         
         # Niveles fijos para oro
-        sl_distance = 12.0  # $12 SL
-        tp_distance = 24.0  # $24 TP
+        sl_distance = 12.0
+        tp_distance = 24.0
+        
+        # Determinar confianza de forma más estricta
+        confidence = 'HIGH' if (distance_to_level <= 4 and upper_wick_pct >= 45) else 'MEDIUM'
         
         signal = {
             'symbol': 'XAUUSD',
@@ -1011,13 +1082,17 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price + sl_distance,
             'tp': price - tp_distance,
-            'explanation': f'XAUUSD: Reversión bajista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {upper_wick_pct:.1f}%',
+            'explanation': f'XAUUSD SELECTIVE: Reversión bajista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {upper_wick_pct:.1f}%, ATR {atr_current:.1f}',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 60))),
-            'confidence': 'HIGH' if distance_to_level <= 5 else 'MEDIUM',
+            'confidence': confidence,
             'strategy': 'xauusd_advanced'
         }
+        
+        logger.info(f"XAUUSD SELL signal generated: Level distance {distance_to_level:.1f}, Wick {upper_wick_pct:.1f}%, Confidence {confidence}")
         return signal, df
     
+    # Si llegamos aquí, no hay señal válida
+    logger.debug("XAUUSD: No valid setup found after all filters")
     return None, df
 
 

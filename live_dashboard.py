@@ -1180,8 +1180,8 @@ class LiveDashboard:
                             <td>{pos['type']}</td>
                             <td>{pos['volume']}</td>
                             <td>{pos['price_open']:.5f}</td>
-                            <td>{pos['sl']:.5f if pos['sl'] > 0 else '-'}</td>
-                            <td>{pos['tp']:.5f if pos['tp'] > 0 else '-'}</td>
+                            <td>{f"{pos['sl']:.5f}" if pos['sl'] > 0 else '-'}</td>
+                            <td>{f"{pos['tp']:.5f}" if pos['tp'] > 0 else '-'}</td>
                             <td class="{pnl_class}">{pos['profit']:.2f} EUR</td>
                         </tr>
                 """

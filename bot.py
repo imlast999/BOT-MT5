@@ -1,5 +1,13 @@
 import os
 import logging
+
+# Parche para compatibilidad con Python 3.13
+import audioop_patch
+
+# Configurar matplotlib para evitar problemas de threading
+import matplotlib
+matplotlib.use('Agg')  # Usar backend sin GUI
+
 import discord
 import asyncio
 import sqlite3
@@ -15,11 +23,16 @@ from signals import detect_signal, detect_signal_advanced
 from charts import generate_chart
 from secrets_store import save_credentials, load_credentials, clear_credentials
 from risk_manager import create_risk_manager
-from trading_rules import create_advanced_filter, should_execute_signal
+from trading_filters import create_consolidated_filter, should_execute_signal
 from backtest_tracker import backtest_tracker
 import MetaTrader5 as mt5
 from position_manager import list_positions, close_position
 from live_dashboard import start_live_dashboard, stop_live_dashboard, update_dashboard_stats
+from live_dashboard_fixed import start_enhanced_dashboard, stop_enhanced_dashboard, add_signal_to_enhanced_dashboard
+
+# Nuevos sistemas
+from confidence_system import confidence_system
+from duplicate_filter import duplicate_filter
 
 # Importar sistema de apertura de mercados
 try:
@@ -372,7 +385,7 @@ def init_risk_managers():
     global risk_manager, advanced_filter
     try:
         risk_manager = create_risk_manager()
-        advanced_filter = create_advanced_filter()
+        advanced_filter = create_consolidated_filter()
         logger.info("Gestores de riesgo inicializados correctamente")
     except Exception as e:
         logger.error(f"Error inicializando gestores de riesgo: {e}")
@@ -465,6 +478,11 @@ def reset_trades_today():
         logger.exception('Failed to reset trades counter in DB')
 
 
+def get_symbol_tolerance(symbol: str) -> float:
+    """Obtiene la tolerancia específica para un símbolo"""
+    symbol_tolerance_key = f"{symbol.upper()}_TOLERANCE_PIPS"
+    return float(os.getenv(symbol_tolerance_key, AUTOSIGNAL_TOLERANCE_PIPS))
+
 def signals_similar(sig_a, sig_b_tuple, tol_pips: float, symbol: str) -> bool:
     """Compare signal dict `sig_a` to stored tuple (type, entry, sl, tp) using a pip tolerance."""
     if not sig_b_tuple:
@@ -478,6 +496,7 @@ def signals_similar(sig_a, sig_b_tuple, tol_pips: float, symbol: str) -> bool:
     type_a = sig_a.get('type')
     type_b = sig_b_tuple[0]
     if type_a != type_b:
+        logger.debug(f"Signal types differ: {type_a} vs {type_b}")
         return False
 
     entry_a = float(sig_a.get('entry', 0))
@@ -488,7 +507,14 @@ def signals_similar(sig_a, sig_b_tuple, tol_pips: float, symbol: str) -> bool:
     tp_b = float(sig_b_tuple[3])
 
     tol = tol_pips * point
-    if abs(entry_a - entry_b) > tol:
+    
+    # Debug logging
+    entry_diff = abs(entry_a - entry_b)
+    logger.debug(f"Comparing signals for {symbol}: entry_diff={entry_diff:.5f}, tolerance={tol:.5f}, tol_pips={tol_pips}")
+    
+    if entry_diff > tol:
+        logger.debug(f"Entry prices differ too much: {entry_a} vs {entry_b} (diff: {entry_diff:.5f} > {tol:.5f})")
+        return False
         return False
     if abs(sl_a - sl_b) > tol:
         return False
@@ -518,116 +544,91 @@ def connect_mt5():
 # ======================
 
 def _detect_signal_wrapper(df, symbol: str | None = None):
-    """Wrapper que selects per-symbol strategy/config y calls detect_signal_advanced con filtros avanzados.
-    Incluye sistema de fallback para estrategias más simples cuando las avanzadas fallan.
-
-    Returns (signal_dict or None, df_with_indicators, risk_info).
+    """
+    Wrapper mejorado para detección de señales con sistema de confianza
+    
+    Pipeline:
+    1. Detectar setup básico
+    2. Validar confirmaciones  
+    3. Calcular confianza
+    4. Clasificar señal
+    5. Decidir mostrar/ejecutar
     """
     sym = (symbol or SYMBOL or '').upper()
-    # choose strategy: rules config override -> env var -> default
-    env_strategy = os.getenv('AUTOSIGNAL_RULE', os.getenv('DEFAULT_STRATEGY', 'ema50_200'))
-    cfg = RULES_CONFIG.get(sym, {}) or {}
-    strategy = cfg.get('strategy') or env_strategy
-    
-    # Obtener configuración global
-    global_cfg = RULES_CONFIG.get('GLOBAL_SETTINGS', {})
-    confidence_filter = global_cfg.get('notification_settings', {}).get('signal_confidence_filter', 'MEDIUM')
     
     try:
-        # Obtener balance actual para filtros de drawdown
-        current_balance = 5000.0  # Default demo balance
-        try:
-            mt5_initialize()
-            account_info = mt5.account_info()
-            if account_info:
-                current_balance = account_info.balance
-        except Exception:
-            logger.warning("No se pudo obtener balance de MT5, usando balance por defecto")
+        # 1. Detectar setup básico usando el sistema existente (ahora con symbol)
+        sig, df2, risk_info = detect_signal_advanced(df, strategy='ema50_200', config=None, current_balance=5000.0, symbol=sym)
         
-        # 1. Intentar estrategia principal (avanzada)
-        sig, df2, advanced_info = detect_signal_advanced(
-            df, 
-            strategy=strategy, 
-            config=cfg, 
-            current_balance=current_balance
-        )
+        # Debug: verificar tipos
+        logger.debug(f"detect_signal_advanced returned: sig={type(sig)}, df2={type(df2)}, risk_info={type(risk_info)}")
         
-        if sig:
-            # Verificar si la confianza cumple el filtro
-            signal_confidence = sig.get('confidence', 'LOW')
-            if confidence_filter == 'HIGH' and signal_confidence not in ['HIGH']:
-                return None, df2, {
-                    'rejected': True,
-                    'reason': f'Confianza {signal_confidence} no cumple filtro {confidence_filter}',
-                    'advanced_info': advanced_info
-                }
-            elif confidence_filter == 'MEDIUM' and signal_confidence not in ['HIGH', 'MEDIUM']:
-                return None, df2, {
-                    'rejected': True,
-                    'reason': f'Confianza {signal_confidence} no cumple filtro {confidence_filter}',
-                    'advanced_info': advanced_info
-                }
+        if not sig:
+            # Intentar fallback básico
+            fallback_sig, fallback_df = detect_signal(df, strategy='rsi')
+            # Debug: verificar tipos
+            logger.debug(f"detect_signal returned: fallback_sig={type(fallback_sig)}, fallback_df={type(fallback_df)}")
             
-            # Estrategia principal funcionó y cumple filtros
-            return sig, df2, {
-                'approved': True,
-                'strategy_used': strategy,
-                'confidence': sig.get('confidence', 'MEDIUM'),
-                'advanced_info': advanced_info
-            }
-        
-        # 2. Si no hay señal y está habilitado fallback, intentar estrategia simple
-        use_fallback = cfg.get('use_fallback', False)
-        fallback_strategy = cfg.get('fallback_strategy', 'ema50_200')
-        
-        if use_fallback and fallback_strategy and confidence_filter != 'HIGH':
-            # Solo usar fallback si no se requiere confianza HIGH
-            fallback_sig, fallback_df = detect_signal(df, strategy=fallback_strategy, config=cfg)
-            
-            if fallback_sig:
-                # Verificar R:R mínimo para fallback
-                min_rr = cfg.get('min_rr_ratio', 2.0)
-                entry = float(fallback_sig.get('entry', 0))
-                sl = float(fallback_sig.get('sl', 0))
-                tp = float(fallback_sig.get('tp', 0))
+            if fallback_sig and isinstance(fallback_sig, dict):
+                # Asegurar que la señal tenga el símbolo correcto
+                fallback_sig['symbol'] = sym
                 
-                if entry != 0 and sl != 0 and tp != 0:
-                    rr_ratio = abs((tp - entry) / (entry - sl)) if (entry - sl) != 0 else 0
-                    if rr_ratio < min_rr:
-                        return None, df2, {
-                            'rejected': True,
-                            'reason': f'R:R fallback {rr_ratio:.2f} < mínimo {min_rr}',
-                            'advanced_info': advanced_info
-                        }
+                # 2. Calcular confianza para señal fallback
+                confidence, confidence_score, confidence_details = confidence_system.calculate_confidence(fallback_sig, fallback_df, sym)
                 
-                # Añadir información de que es fallback
-                fallback_sig['strategy'] = f"{fallback_strategy}_fallback"
-                fallback_sig['confidence'] = 'MEDIUM'  # Siempre medium para fallback
-                fallback_sig['explanation'] = f"Fallback: {fallback_sig.get('explanation', '')}"
+                # 3. Actualizar la señal con información de confianza
+                fallback_sig['confidence'] = confidence
+                fallback_sig['confidence_score'] = confidence_score
+                fallback_sig['confidence_details'] = confidence_details
+                fallback_sig['strategy'] = 'rsi_fallback'
                 
-                return fallback_sig, fallback_df, {
+                # 4. Crear risk_info para fallback
+                risk_info = {
                     'approved': True,
-                    'strategy_used': fallback_strategy,
+                    'strategy_used': 'rsi_fallback',
                     'is_fallback': True,
-                    'confidence': 'MEDIUM',
-                    'original_strategy': strategy,
-                    'fallback_reason': advanced_info.get('reason', 'Estrategia principal no generó señal')
+                    'confidence': confidence,
+                    'confidence_score': confidence_score,
+                    'confidence_details': confidence_details,
+                    'should_show': confidence_system.should_show_signal(confidence),
+                    'can_auto_execute': confidence_system.should_auto_execute(confidence, AUTO_EXECUTE_SIGNALS)
                 }
+                
+                return fallback_sig, fallback_df, risk_info
+            
+            return None, df, {'approved': False, 'reason': 'No hay señal básica válida'}
         
-        # 3. DESHABILITADO: No usar estrategia de emergencia para evitar spam
-        # El emergency fallback está deshabilitado en la configuración
+        # Asegurar que la señal tenga el símbolo correcto
+        logger.debug(f"Main signal type: {type(sig)}, content: {sig}")
+        if sig and isinstance(sig, dict):
+            if 'symbol' not in sig or not sig['symbol']:
+                sig['symbol'] = sym
+        else:
+            logger.error(f"Signal is not a valid dictionary: {type(sig)} - {sig}")
+            return None, df, {'approved': False, 'reason': f'Invalid signal type: {type(sig)}'}
         
-        # 4. No se pudo generar ninguna señal
-        return None, df2, {
-            'rejected': True,
-            'reason': advanced_info.get('reason', 'No hay señal básica válida'),
-            'advanced_info': advanced_info,
-            'strategies_tried': [strategy, fallback_strategy] if use_fallback else [strategy]
-        }
+        # 2. Calcular confianza para señal principal
+        confidence, confidence_score, confidence_details = confidence_system.calculate_confidence(sig, df2, sym)
         
-    except Exception:
-        logger.exception('Error in _detect_signal_wrapper for %s', sym)
-        return None, df, {'error': 'Error en wrapper de señales'}
+        # 3. Actualizar la señal con información de confianza
+        sig['confidence'] = confidence
+        sig['confidence_score'] = confidence_score
+        sig['confidence_details'] = confidence_details
+        
+        # 4. Actualizar risk_info con información de confianza
+        risk_info.update({
+            'confidence': confidence,
+            'confidence_score': confidence_score,
+            'confidence_details': confidence_details,
+            'should_show': confidence_system.should_show_signal(confidence),
+            'can_auto_execute': confidence_system.should_auto_execute(confidence, AUTO_EXECUTE_SIGNALS)
+        })
+        
+        return sig, df2, risk_info
+        
+    except Exception as e:
+        logger.error(f"Error in _detect_signal_wrapper for {sym}: {e}")
+        return None, df, {'approved': False, 'reason': f'Error: {str(e)}'}
 
 
 def compute_suggested_lot(signal, risk_pct: float = None):
@@ -775,13 +776,13 @@ async def on_ready():
         bot.loop.create_task(_market_opening_loop())
         log_event("Sistema de alertas de apertura iniciado")
     
-    # start live dashboard
+    # start enhanced dashboard
     try:
-        start_live_dashboard()
-        log_event("Dashboard live iniciado - Actualización cada 5 minutos")
+        start_enhanced_dashboard()
+        log_event("Dashboard inteligente iniciado - Sistema de confianza integrado")
     except Exception as e:
-        log_event(f"Error iniciando dashboard live: {e}", "ERROR")
-        logger.exception("Failed to start live dashboard")
+        log_event(f"Error iniciando dashboard inteligente: {e}", "ERROR")
+        logger.exception("Failed to start enhanced dashboard")
     
     # Print helpful invite URL for adding the bot with application commands scope
     try:
@@ -1263,75 +1264,165 @@ async def _auto_signal_loop():
                             strat = cfg.get('strategy') or strat
                             sig, df2, risk_info = _detect_signal_wrapper(df, symbol=sym)
                             if sig:
-                                # Verificar límites antes de procesar la señal
+                                # 🧠 FLUJO CORRECTO: detectar setup → validar confirmaciones → calcular confianza → clasificar señal → decidir mostrar/ejecutar
+                                
+                                # 1. Verificar límites antes de procesar la señal
                                 reset_period_if_needed()
                                 
-                                # Verificar límite diario
                                 if state.trades_today >= MAX_TRADES_PER_DAY:
                                     log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: Límite diario alcanzado ({state.trades_today}/{MAX_TRADES_PER_DAY})")
                                     continue
                                 
-                                # Verificar límite de período
                                 if state.trades_current_period >= MAX_TRADES_PER_PERIOD:
                                     period_status = get_period_status()
                                     log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: Límite de período alcanzado ({state.trades_current_period}/{MAX_TRADES_PER_PERIOD}) - Período: {period_status['current_period']}")
                                     continue
                                 
-                                signals_found += 1
-                                # fingerprint the signal by type and raw prices
-                                fingerprint = (sig.get('type'), float(sig.get('entry', 0)), float(sig.get('sl', 0)), float(sig.get('tp', 0)))
-                                # if identical (within tolerance in pips) to last sent and within longer cooldown, skip
-                                if last_sig and signals_similar(sig, last_sig, AUTOSIGNAL_TOLERANCE_PIPS, sym) and last_time and (now - last_time) < timedelta(seconds=AUTOSIGNAL_INTERVAL * 20):  # Aumentado de 10 a 20
-                                    log_event(f"🔄 SIGNAL DUPLICATE: {sym} | Skipping identical signal within tolerance (last: {(now - last_time).total_seconds():.0f}s ago)")
-                                    # update last sent time to avoid tight loops
-                                    save_last_auto_sent(sym, now, fingerprint)
-                                    state.last_auto_sent[sym] = {'time': now, 'sig': fingerprint}
+                                # 2. Verificar duplicados usando el nuevo sistema
+                                is_duplicate, duplicate_reason = duplicate_filter.is_duplicate(sig, sym)
+                                if is_duplicate:
+                                    log_event(f"🔄 SIGNAL DUPLICATE: {sym} | {duplicate_reason}")
                                     continue
-
+                                
+                                # 3. Obtener información de confianza
+                                confidence = sig.get('confidence', 'MEDIUM')
+                                confidence_score = sig.get('confidence_score', 1)
+                                confidence_details = sig.get('confidence_details', {})
+                                should_show = risk_info.get('should_show', False)
+                                can_auto_execute = risk_info.get('can_auto_execute', False)
+                                
+                                # 4. 👁 FILTRO DE VISUALIZACIÓN: Solo mostrar MEDIUM-HIGH y HIGH
+                                # 🧩 FILTRO ESPECIAL XAUUSD: Aún más estricto
+                                if sym == 'XAUUSD' and confidence in ['LOW', 'MEDIUM']:
+                                    log_event(f"📝 SIGNAL LOGGED: {sym} [{confidence}] {sig.get('type')} @ {sig.get('entry'):.5f} | Not shown (XAUUSD quality filter)")
+                                    
+                                    # Añadir señal al dashboard inteligente (aunque no se muestre)
+                                    try:
+                                        dashboard_signal_data = {
+                                            'timestamp': datetime.now().isoformat(),
+                                            'symbol': sym,
+                                            'strategy': risk_info.get('strategy_used', 'unknown'),
+                                            'direction': sig.get('type', 'BUY'),
+                                            'price': sig.get('entry', 0.0),
+                                            'sl_price': sig.get('sl', 0.0),
+                                            'tp_price': sig.get('tp', 0.0),
+                                            'confidence_level': confidence,
+                                            'confidence_score': confidence_score,
+                                            'confidence_details': confidence_details,
+                                            'status': 'XAUUSD_FILTERED',
+                                            'executed': False,
+                                            'lot_size': 0.01
+                                        }
+                                        add_signal_to_enhanced_dashboard(dashboard_signal_data)
+                                    except Exception as e:
+                                        logger.error(f"Error añadiendo señal XAUUSD filtrada al dashboard: {e}")
+                                    
+                                    # Registrar para backtest pero no mostrar
+                                    duplicate_filter.register_signal(sig, sym, confidence)
+                                    continue
+                                
+                                # Filtro general de confianza para otros símbolos
+                                if not should_show:
+                                    log_event(f"📝 SIGNAL LOGGED: {sym} [{confidence}] {sig.get('type')} @ {sig.get('entry'):.5f} | Not shown (confidence filter)")
+                                    
+                                    # Añadir señal al dashboard inteligente (aunque no se muestre)
+                                    try:
+                                        dashboard_signal_data = {
+                                            'timestamp': datetime.now().isoformat(),
+                                            'symbol': sym,
+                                            'strategy': risk_info.get('strategy_used', 'unknown'),
+                                            'direction': sig.get('type', 'BUY'),
+                                            'price': sig.get('entry', 0.0),
+                                            'sl_price': sig.get('sl', 0.0),
+                                            'tp_price': sig.get('tp', 0.0),
+                                            'confidence_level': confidence,
+                                            'confidence_score': confidence_score,
+                                            'confidence_details': confidence_details,
+                                            'status': 'FILTERED',
+                                            'executed': False,
+                                            'lot_size': 0.01
+                                        }
+                                        add_signal_to_enhanced_dashboard(dashboard_signal_data)
+                                    except Exception as e:
+                                        logger.error(f"Error añadiendo señal filtrada al dashboard: {e}")
+                                    
+                                    # Registrar para backtest pero no mostrar
+                                    duplicate_filter.register_signal(sig, sym, confidence)
+                                    continue
+                                
+                                signals_found += 1
+                                
+                                # 5. Registrar señal para evitar duplicados futuros
+                                duplicate_filter.register_signal(sig, sym, confidence)
+                                
+                                # 6. Crear ID de señal y almacenar
                                 sid = max(state.pending_signals.keys(), default=0) + 1
                                 state.pending_signals[sid] = sig
                                 
-                                # BACKTEST TRACKING: Registrar nueva señal
+                                # 7. BACKTEST TRACKING: Registrar nueva señal
                                 try:
+                                    strategy_used = risk_info.get('strategy_used', 'unknown')
+                                    is_fallback = risk_info.get('is_fallback', False)
+                                    
                                     signal_data = {
                                         "symbol": sig.get('symbol', sym),
                                         "direction": sig.get('type'),
                                         "entry_price": sig.get('entry'),
                                         "stop_loss": sig.get('sl'),
                                         "take_profit": sig.get('tp'),
-                                        "confidence": sig.get('confidence', 'MEDIUM'),
+                                        "confidence": confidence,
                                         "strategy": strategy_used,
                                         "risk_reward": sig.get('rr_ratio', 0),
                                         "lot_size": sig.get('lot_size', 0),
-                                        "notes": f"Autoseñal - {'Fallback' if is_fallback else 'Principal'} - {'Emergency' if is_emergency else 'Normal'}"
+                                        "notes": f"Autoseñal - {'Fallback' if is_fallback else 'Principal'} - Score: {confidence_score}"
                                     }
                                     backtest_id = backtest_tracker.add_signal(signal_data)
-                                    # Asociar el ID de backtest con el ID de señal del bot
                                     sig['backtest_id'] = backtest_id
                                     state.pending_signals[sid] = sig
                                 except Exception as e:
                                     logger.error(f"Error registrando señal en backtest: {e}")
                                 
-                                # Log nueva señal con información de estrategia
-                                confidence = sig.get('confidence', 'MEDIUM')
+                                # 8. Log nueva señal con información de confianza
                                 strategy_used = risk_info.get('strategy_used', 'unknown')
                                 is_fallback = risk_info.get('is_fallback', False)
-                                is_emergency = risk_info.get('is_emergency', False)
                                 
-                                if is_emergency:
-                                    strategy_label = f"{strategy_used} (EMERGENCY)"
-                                elif is_fallback:
+                                if is_fallback:
                                     strategy_label = f"{strategy_used} (FALLBACK)"
                                 else:
                                     strategy_label = strategy_used
                                 
-                                log_event(f"✅ SIGNAL GENERATED: {sym} [{strategy_label}] {sig.get('type')} @ {sig.get('entry'):.5f} | Confidence: {confidence}")
+                                log_event(f"✅ SIGNAL GENERATED: {sym} [{strategy_label}] {sig.get('type')} @ {sig.get('entry'):.5f} | Confidence: {confidence} ({confidence_score}/3)")
+                                
+                                # Añadir señal al dashboard inteligente
+                                try:
+                                    dashboard_signal_data = {
+                                        'timestamp': datetime.now().isoformat(),
+                                        'symbol': sym,
+                                        'strategy': strategy_used,
+                                        'direction': sig.get('type', 'BUY'),
+                                        'price': sig.get('entry', 0.0),
+                                        'sl_price': sig.get('sl', 0.0),
+                                        'tp_price': sig.get('tp', 0.0),
+                                        'confidence_level': confidence,
+                                        'confidence_score': confidence_score,
+                                        'confidence_details': confidence_details,
+                                        'status': 'PROPOSED',
+                                        'executed': False,
+                                        'lot_size': 0.01
+                                    }
+                                    add_signal_to_enhanced_dashboard(dashboard_signal_data)
+                                except Exception as e:
+                                    logger.error(f"Error añadiendo señal al dashboard inteligente: {e}")
+                                
+                                # 9. 🎨 PRESENTACIÓN DISCORD con colores según confianza
+                                confidence_emoji = "🔥" if confidence == "HIGH" else "⚡" if confidence == "MEDIUM-HIGH" else "📊"
+                                confidence_color = 0x00ff00 if confidence == "HIGH" else 0xffa500 if confidence == "MEDIUM-HIGH" else 0xffff00
                                 
                                 text = (
-                                    f"🎯 **SEÑAL AUTOMÁTICA** (ID {sid})\n"
+                                    f"{confidence_emoji} **SEÑAL AUTOMÁTICA** (ID {sid})\n"
                                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 **{sig['symbol']}** | Estrategia: `{sig.get('strategy', 'N/A')}`\n"
-                                    f"🔄 **{sig['type']}** | Confianza: `{sig.get('confidence', 'MEDIUM')}`\n"
+                                    f"📊 **{sig['symbol']}** | Estrategia: `{strategy_label}`\n"
+                                    f"🔄 **{sig['type']}** | **CONFIDENCE: {confidence}** ({confidence_score}/3)\n"
                                     f"\n📈 **Niveles de Trading:**\n"
                                     f"• **Entrada:** `{sig['entry']:.5f}`\n"
                                     f"• **Stop Loss:** `{sig['sl']:.5f}`\n"
@@ -1341,8 +1432,13 @@ async def _auto_signal_loop():
                                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                     f"🎮 **Comandos:** `/accept {sid}` | `/reject {sid}`"
                                 )
+                                
+                                # 10. ⚡ EJECUCIÓN AUTOMÁTICA: Solo HIGH puede auto-ejecutarse
+                                if can_auto_execute:
+                                    text += f"\n\n🤖 **AUTO-EJECUCIÓN HABILITADA** (Confianza HIGH)"
+                                
                                 try:
-                                    # Asegurar que el símbolo sea un string
+                                    # Generar gráfico
                                     chart_symbol = sig.get('symbol', sym)
                                     if hasattr(chart_symbol, 'iloc'):
                                         chart_symbol = str(chart_symbol.iloc[0]) if len(chart_symbol) > 0 else sym
@@ -1354,6 +1450,7 @@ async def _auto_signal_loop():
                                 except Exception as e:
                                     logger.error(f"Autosignal chart generation failed: {e}")
                                     chart = None
+                                
                                 if chart:
                                     await ch.send(text, file=discord.File(chart))
                                     try:
@@ -4088,8 +4185,8 @@ if __name__ == '__main__':
         # ensure MT5 is shutdown when process exits
         log_event("Bot cerrándose - Limpiando recursos...")
         try:
-            stop_live_dashboard()
-            log_event("Dashboard live detenido")
+            stop_enhanced_dashboard()
+            log_event("Dashboard inteligente detenido")
         except Exception:
             pass
         try:
