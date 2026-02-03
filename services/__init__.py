@@ -5,6 +5,9 @@ Servicios consolidados del bot de trading que proporcionan:
 - Logging inteligente
 - Ejecución de trades
 - Dashboard y métricas
+- Auto-señales
+- Base de datos
+- Comandos Discord
 - Funcionalidades transversales
 
 Reemplaza la fragmentación anterior de funcionalidades dispersas.
@@ -35,6 +38,24 @@ from .dashboard import (
     stop_enhanced_dashboard,
     add_signal_to_enhanced_dashboard,
     update_dashboard_stats
+)
+
+from .autosignals import (
+    create_autosignals_service
+)
+
+from .database import (
+    get_database_service,
+    init_db,
+    load_db_state,
+    save_autosignals_state,
+    save_last_auto_sent,
+    save_trades_today,
+    reset_trades_today
+)
+
+from .commands import (
+    create_commands_service
 )
 
 # Instancias globales para compatibilidad
@@ -68,5 +89,20 @@ __all__ = [
     'start_enhanced_dashboard',
     'stop_enhanced_dashboard',
     'add_signal_to_enhanced_dashboard',
-    'update_dashboard_stats'
+    'update_dashboard_stats',
+    
+    # Auto-signals
+    'create_autosignals_service',
+    
+    # Database
+    'get_database_service',
+    'init_db',
+    'load_db_state',
+    'save_autosignals_state',
+    'save_last_auto_sent',
+    'save_trades_today',
+    'reset_trades_today',
+    
+    # Commands
+    'create_commands_service'
 ]

@@ -50,9 +50,6 @@ from services import (
     update_dashboard_stats
 )
 
-# Import intelligent logger to access current_log_file
-from services.logging import get_intelligent_logger
-
 # Signals dispatcher (simplificado)
 from signals import _detect_signal_wrapper
 
@@ -474,31 +471,17 @@ async def on_ready():
         log_event("Error cargando estado de la base de datos", "ERROR")
         logger.exception('Failed to load DB state')
     
-    # start autosignal background task using services
-    try:
-        from services.autosignals import create_autosignals_service
-        autosignals_service = create_autosignals_service(bot, state, {
-            'AUTOSIGNAL_SYMBOLS': AUTOSIGNAL_SYMBOLS,
-            'AUTOSIGNAL_INTERVAL': AUTOSIGNAL_INTERVAL,
-            'SIGNALS_CHANNEL_NAME': SIGNALS_CHANNEL_NAME,
-            'MAX_TRADES_PER_DAY': MAX_TRADES_PER_DAY,
-            'MAX_TRADES_PER_PERIOD': MAX_TRADES_PER_PERIOD,
-            'KILL_SWITCH': KILL_SWITCH
-        })
-        bot.loop.create_task(autosignals_service.start_loop())
-        log_event("Servicio de autosignals iniciado")
-    except Exception as e:
-        log_event(f"Error iniciando servicio de autosignals: {e}", "ERROR")
-        logger.exception("Failed to start autosignals service")
+    # start autosignal background task
+    bot.loop.create_task(_auto_signal_loop())
     
     # start trailing stops background task
     if TRAILING_STOPS_AVAILABLE:
-        bot.loop.create_task(_trailing_stops_loop_simple())
+        bot.loop.create_task(_trailing_stops_loop())
         log_event("Sistema de trailing stops iniciado")
     
     # start market opening alerts background task
     if MARKET_OPENING_AVAILABLE:
-        bot.loop.create_task(_market_opening_loop_simple())
+        bot.loop.create_task(_market_opening_loop())
         log_event("Sistema de alertas de apertura iniciado")
     
     # start enhanced dashboard
@@ -575,44 +558,10 @@ async def on_ready():
     log_event("Bot completamente inicializado y listo para operar")
     
     # Mostrar información del archivo de log
-    intelligent_logger = get_intelligent_logger()
-    current_log_file = intelligent_logger.current_log_file
     if current_log_file:
         log_filename = os.path.basename(current_log_file)
         log_event(f"📝 Archivo de log: {log_filename}")
         log_event(f"📁 Ruta completa: {current_log_file}")
-
-
-# Simplified background loops for compatibility
-async def _trailing_stops_loop_simple():
-    """Simplified trailing stops loop"""
-    await bot.wait_until_ready()
-    logger.info('Trailing stops loop started')
-    
-    while True:
-        try:
-            if TRAILING_STOPS_AVAILABLE and trailing_manager:
-                trailing_manager.update_all_trailing_stops()
-            await asyncio.sleep(30)
-        except Exception:
-            logger.exception('Trailing stops loop crashed; retrying in 60s')
-            await asyncio.sleep(60)
-
-
-async def _market_opening_loop_simple():
-    """Simplified market opening loop"""
-    await bot.wait_until_ready()
-    logger.info('Market opening alerts loop started')
-    
-    while True:
-        try:
-            if MARKET_OPENING_AVAILABLE and market_opening_system:
-                # Basic market opening monitoring
-                pass
-            await asyncio.sleep(300)
-        except Exception:
-            logger.exception('Market opening loop crashed; retrying in 10 minutes')
-            await asyncio.sleep(600)
 
 # ======================
 # COMANDOS
@@ -799,9 +748,93 @@ async def close_signal(ctx, backtest_id: int, result: str, profit_loss: float = 
     except Exception as e:
         await ctx.send(f"❌ Error cerrando señal: {e}")
 
-# Backtest stats command moved to services/commands.py
+@bot.command()
+async def backtest_stats(ctx, days: int = 7):
+    """Muestra estadísticas de backtesting de los últimos N días"""
+    if ctx.author.id != AUTHORIZED_USER_ID:
+        return
+    
+    try:
+        stats = backtest_tracker.get_statistics(days)
+        
+        if "error" in stats:
+            await ctx.send(f"❌ {stats['error']}")
+            return
+        
+        embed = discord.Embed(
+            title=f"📊 Estadísticas de Backtesting - Últimos {days} días",
+            color=0x00ff00 if stats['total_pnl'] > 0 else 0xff0000,
+            timestamp=datetime.now()
+        )
+        
+        # Estadísticas generales
+        embed.add_field(
+            name="📈 Resumen General",
+            value=f"**Total Señales:** {stats['total_signals']}\n"
+                  f"**Cerradas:** {stats['closed_signals']}\n"
+                  f"**Pendientes:** {stats['pending_signals']}\n"
+                  f"**Win Rate:** {stats['win_rate']}%",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="💰 P&L",
+            value=f"**Total:** {stats['total_pnl']} EUR\n"
+                  f"**Ganancia Prom:** {stats['average_win']} EUR\n"
+                  f"**Pérdida Prom:** {stats['average_loss']} EUR\n"
+                  f"**Factor Beneficio:** {stats['profit_factor']}",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎯 Resultados",
+            value=f"**Ganadoras:** {stats['wins']}\n"
+                  f"**Perdedoras:** {stats['losses']}\n"
+                  f"**Breakeven:** {stats['breakevens']}",
+            inline=True
+        )
+        
+        # Por símbolo
+        if stats['symbols']:
+            symbol_text = ""
+            for symbol, data in stats['symbols'].items():
+                symbol_text += f"**{symbol}:** {data['win_rate']:.1f}% ({data['wins']}/{data['total_signals']}) | {data['total_pnl']:.2f} EUR\n"
+            embed.add_field(name="📊 Por Símbolo", value=symbol_text[:1024], inline=False)
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        await ctx.send(f"❌ Error generando estadísticas: {e}")
 
-# Backtest report command moved to services/commands.py
+@bot.command()
+async def backtest_report(ctx, days: int = 30):
+    """Genera un reporte HTML de backtesting"""
+    if ctx.author.id != AUTHORIZED_USER_ID:
+        return
+    
+    try:
+        html_content = backtest_tracker.generate_html_report(days)
+        
+        # Guardar el reporte en un archivo temporal
+        filename = f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        await ctx.send(
+            f"📊 **Reporte de Backtesting generado**\n"
+            f"Período: Últimos {days} días\n"
+            f"Archivo: `{filename}`",
+            file=discord.File(filename)
+        )
+        
+        # Limpiar archivo temporal
+        try:
+            os.remove(filename)
+        except:
+            pass
+            
+    except Exception as e:
+        await ctx.send(f"❌ Error generando reporte: {e}")
 
 @bot.command()
 async def chart(ctx):
@@ -825,7 +858,103 @@ async def chart(ctx):
 # Slash commands (app commands)
 # ======================
 
-# Large slash commands moved to services/commands.py
+@bot.tree.command(name="help")
+async def slash_help(interaction: discord.Interaction):
+    """Muestra comandos disponibles y guía de uso (solo administrador)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🤖 Bot MT5 - Guía de Comandos",
+        description="Sistema de trading automatizado para EURUSD, XAUUSD y BTCEUR",
+        color=0x00ff88
+    )
+    
+    # Comandos principales
+    embed.add_field(
+        name="🎯 **Comandos de Trading**",
+        value=(
+            "`/signal [símbolo]` - Detecta señal con filtros avanzados\n"
+            "`/test_signal [símbolo]` - Genera señal de prueba\n"
+            "`/force_autosignal [símbolo]` - Fuerza señal automática\n"
+            "`/chart [símbolo]` - Genera gráfico profesional\n"
+            "`/accept [id]` - Acepta señal pendiente\n"
+            "`/reject [id]` - Rechaza señal pendiente"
+        ),
+        inline=False
+    )
+    
+    # Comandos de gestión
+    embed.add_field(
+        name="📊 **Comandos de Análisis**",
+        value=(
+            "`/demo_stats` - Estadísticas de cuenta demo\n"
+            "`/performance [días]` - Reporte de performance\n"
+            "`/strategy_performance [días]` - Performance por estrategia\n"
+            "`/risk_status` - Estado de gestión de riesgo\n"
+            "`/positions` - Lista posiciones abiertas\n"
+            "`/market_overview` - Resumen del mercado actual\n"
+            "`/next_opening` - Próxima apertura de mercado\n"
+            "`/pre_market_analysis [símbolo]` - Análisis pre-mercado"
+        ),
+        inline=False
+    )
+    
+    # Comandos de backtesting
+    embed.add_field(
+        name="📈 **Comandos de Backtesting**",
+        value=(
+            "`backtest_stats [días]` - Estadísticas de señales\n"
+            "`backtest_report [días]` - Reporte HTML completo\n"
+            "\n*Rastrea todas las señales generadas y sus resultados*"
+        ),
+        inline=False
+    )
+    
+    # Comandos de configuración
+    embed.add_field(
+        name="⚙️ **Comandos de Configuración**",
+        value=(
+            "`/autosignals [on/off]` - Control señales automáticas\n"
+            "`/set_strategy [símbolo] [estrategia]` - Cambiar estrategia\n"
+            "`/set_mt5_credentials` - Configurar MT5\n"
+            "`/mt5_login` - Conectar a MT5\n"
+            "`/status` - Estado general del bot"
+        ),
+        inline=False
+    )
+    
+    # Información adicional
+    embed.add_field(
+        name="💡 **Sugerencias de Uso**",
+        value=(
+            "• Usa `/demo_stats` para monitorear progreso diario\n"
+            "• Revisa `/strategy_performance 7` semanalmente\n"
+            "• Prueba `/test_signal EURUSD` para ver el sistema\n"
+            "• Configura MT5 con `/set_mt5_credentials` primero\n"
+            "• Crea canal `#signals` para señales automáticas\n"
+            "• Usa `/next_opening` para anticipar aperturas\n"
+            "• Revisa `/pre_market_analysis` antes de sesiones"
+        ),
+        inline=False
+    )
+    
+    # Pares principales
+    embed.add_field(
+        name="📈 **Pares Principales**",
+        value=(
+            "🇪🇺 **EURUSD** - Breakout de consolidación\n"
+            "🥇 **XAUUSD** - Reversión en niveles clave\n"
+            "₿ **BTCEUR** - Momentum crypto\n"
+            "\n*Cada par usa estrategia específica optimizada*"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="Bot MT5 v2.0 | Modo Demo Agresivo | 3 Pares Principales")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def _find_signals_channel():
@@ -837,7 +966,333 @@ async def _find_signals_channel():
     return None
 
 
-# Auto-signal loop moved to services/autosignals.py
+async def _auto_signal_loop():
+    await bot.wait_until_ready()
+    log_event(f'Auto-signal loop iniciado (AUTOSIGNALS={state.autosignals}, AUTO_EXECUTE={AUTO_EXECUTE_SIGNALS})')
+    
+    scan_count = 0
+    while True:
+        try:
+            if state.autosignals and not KILL_SWITCH:
+                scan_count += 1
+                if scan_count % 10 == 1:  # Log cada 10 escaneos (cada ~3 minutos)
+                    log_event(
+                        f"Checking {len(AUTOSIGNAL_SYMBOLS)} pairs...", "INFO", "AUTOSIGNAL"
+                    )
+                
+                ch = await _find_signals_channel()
+                if ch is None:
+                    if scan_count % 50 == 1:  # Log error cada 50 escaneos
+                        log_event('Canal #signals no encontrado para autosignals', "WARNING")
+                else:
+                    signals_found = 0
+                    for sym in AUTOSIGNAL_SYMBOLS:
+                        # throttle per symbol and avoid reposting identical signals
+                        now = datetime.now(timezone.utc)
+                        last = state.last_auto_sent.get(sym)
+                        if last:
+                            last_time = last.get('time')
+                            last_sig = last.get('sig')
+                        else:
+                            last_time = None
+                            last_sig = None
+                        # small throttle to avoid tight loops
+                        if last_time and (now - last_time) < timedelta(seconds=AUTOSIGNAL_INTERVAL * 1):
+                            continue
+                        try:
+                            connect_mt5()
+                            df = get_candles(sym, TIMEFRAME, CANDLES)
+                            # choose per-symbol strategy if configured
+                            strat = AUTOSIGNAL_RULES.get(sym, 'ema')
+                            # pick per-symbol config if available
+                            # prefer explicit strategy in per-symbol config if present
+                            cfg = RULES_CONFIG.get(sym.upper(), {}) or {}
+                            strat = cfg.get('strategy') or strat
+                            sig, df2, risk_info = _detect_signal_wrapper(df, symbol=sym)
+                            if sig:
+                                # 🧠 FLUJO CORRECTO: detectar setup → validar confirmaciones → calcular confianza → clasificar señal → decidir mostrar/ejecutar
+                                
+                                # 1. Verificar límites antes de procesar la señal
+                                reset_period_if_needed()
+                                
+                                if state.trades_today >= MAX_TRADES_PER_DAY:
+                                    log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: Límite diario alcanzado ({state.trades_today}/{MAX_TRADES_PER_DAY})")
+                                    continue
+                                
+                                if state.trades_current_period >= MAX_TRADES_PER_PERIOD:
+                                    period_status = get_period_status()
+                                    log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: Límite de período alcanzado ({state.trades_current_period}/{MAX_TRADES_PER_PERIOD}) - Período: {period_status['current_period']}")
+                                    continue
+                                
+                                # 2. Verificar duplicados usando el sistema consolidado
+                                from core import filters_system
+                                is_duplicate, duplicate_reason = filters_system.is_duplicate(sig, sym)
+                                if is_duplicate:
+                                    # Usar logging inteligente - no loguear cada rechazo individual
+                                    log_signal_evaluation(
+                                        sym, strat, shown=False, confidence=sig.get('confidence', 'MEDIUM'),
+                                        score=sig.get('score', 0.0), rejection_reason=f"Duplicate: {duplicate_reason}"
+                                    )
+                                    
+                                    # Actualizar estadísticas de sesión para señales bloqueadas
+                                    if SESSION_SUMMARY_AVAILABLE:
+                                        session_summary.update_signal_stats(sym, sig.get('confidence', 'MEDIUM'), shown=False, executed=False, blocked=True)
+                                    
+                                    continue
+                                
+                                # 3. Obtener información de confianza
+                                confidence = sig.get('confidence', 'MEDIUM')
+                                confidence_score = sig.get('confidence_score', 1)
+                                confidence_details = sig.get('confidence_details', {})
+                                should_show = risk_info.get('should_show', False)
+                                can_auto_execute = risk_info.get('can_auto_execute', False)
+                                
+                                # 4. 👁 FILTRO DE VISUALIZACIÓN: Solo mostrar MEDIUM-HIGH y HIGH
+                                # 🧩 FILTRO ESPECIAL XAUUSD: Aún más estricto
+                                if sym == 'XAUUSD' and confidence in ['LOW', 'MEDIUM']:
+                                    # Usar logging inteligente - no loguear cada rechazo individual
+                                    log_signal_evaluation(
+                                        sym, strat, shown=False, confidence=confidence,
+                                        score=sig.get('score', 0.0), rejection_reason="XAUUSD quality filter"
+                                    )
+                                    
+                                    # Actualizar estadísticas de sesión para señales filtradas
+                                    if SESSION_SUMMARY_AVAILABLE:
+                                        session_summary.update_signal_stats(sym, confidence, shown=False, executed=False, filtered=True)
+                                    
+                                    # Añadir señal al dashboard inteligente (aunque no se muestre)
+                                    try:
+                                        dashboard_signal_data = {
+                                            'timestamp': datetime.now().isoformat(),
+                                            'symbol': sym,
+                                            'strategy': risk_info.get('strategy_used', 'unknown'),
+                                            'direction': sig.get('type', 'BUY'),
+                                            'price': sig.get('entry', 0.0),
+                                            'sl_price': sig.get('sl', 0.0),
+                                            'tp_price': sig.get('tp', 0.0),
+                                            'confidence_level': confidence,
+                                            'confidence_score': confidence_score,
+                                            'confidence_details': confidence_details,
+                                            'status': 'XAUUSD_FILTERED',
+                                            'executed': False,
+                                            'lot_size': 0.01
+                                        }
+                                        add_signal_to_enhanced_dashboard(dashboard_signal_data)
+                                    except Exception as e:
+                                        logger.error(f"Error añadiendo señal XAUUSD filtrada al dashboard: {e}")
+                                    
+                                    # Registrar para backtest pero no mostrar
+                                    filters_system.register_signal(sig, sym, confidence)
+                                    continue
+                                
+                                # Filtro general de confianza para otros símbolos
+                                if not should_show:
+                                    # Usar logging inteligente - no loguear cada rechazo individual
+                                    log_signal_evaluation(
+                                        sym, strat, shown=False, confidence=confidence,
+                                        score=sig.get('score', 0.0), rejection_reason="Confidence filter"
+                                    )
+                                    
+                                    # Actualizar estadísticas de sesión para señales filtradas
+                                    if SESSION_SUMMARY_AVAILABLE:
+                                        session_summary.update_signal_stats(sym, confidence, shown=False, executed=False, filtered=True)
+                                    
+                                    # Añadir señal al dashboard inteligente (aunque no se muestre)
+                                    try:
+                                        dashboard_signal_data = {
+                                            'timestamp': datetime.now().isoformat(),
+                                            'symbol': sym,
+                                            'strategy': risk_info.get('strategy_used', 'unknown'),
+                                            'direction': sig.get('type', 'BUY'),
+                                            'price': sig.get('entry', 0.0),
+                                            'sl_price': sig.get('sl', 0.0),
+                                            'tp_price': sig.get('tp', 0.0),
+                                            'confidence_level': confidence,
+                                            'confidence_score': confidence_score,
+                                            'confidence_details': confidence_details,
+                                            'status': 'FILTERED',
+                                            'executed': False,
+                                            'lot_size': 0.01
+                                        }
+                                        add_signal_to_enhanced_dashboard(dashboard_signal_data)
+                                    except Exception as e:
+                                        logger.error(f"Error añadiendo señal filtrada al dashboard: {e}")
+                                    
+                                    # Registrar para backtest pero no mostrar
+                                    filters_system.register_signal(sig, sym, confidence)
+                                    continue
+                                
+                                signals_found += 1
+                                
+                                # 5. Registrar señal para evitar duplicados futuros
+                                filters_system.register_signal(sig, sym, confidence)
+                                
+                                # 6. Crear ID de señal y almacenar
+                                sid = max(state.pending_signals.keys(), default=0) + 1
+                                state.pending_signals[sid] = sig
+                                
+                                # 7. BACKTEST TRACKING: Registrar nueva señal
+                                try:
+                                    strategy_used = risk_info.get('strategy_used', 'unknown')
+                                    is_fallback = risk_info.get('is_fallback', False)
+                                    
+                                    signal_data = {
+                                        "symbol": sig.get('symbol', sym),
+                                        "direction": sig.get('type'),
+                                        "entry_price": sig.get('entry'),
+                                        "stop_loss": sig.get('sl'),
+                                        "take_profit": sig.get('tp'),
+                                        "confidence": confidence,
+                                        "strategy": strategy_used,
+                                        "risk_reward": sig.get('rr_ratio', 0),
+                                        "lot_size": sig.get('lot_size', 0),
+                                        "notes": f"Autoseñal - {'Fallback' if is_fallback else 'Principal'} - Score: {confidence_score}"
+                                    }
+                                    backtest_id = backtest_tracker.add_signal(signal_data)
+                                    sig['backtest_id'] = backtest_id
+                                    state.pending_signals[sid] = sig
+                                except Exception as e:
+                                    logger.error(f"Error registrando señal en backtest: {e}")
+                                
+                                # 8. Log nueva señal con información de confianza
+                                strategy_used = risk_info.get('strategy_used', 'unknown')
+                                is_fallback = risk_info.get('is_fallback', False)
+                                
+                                if is_fallback:
+                                    strategy_label = f"{strategy_used} (FALLBACK)"
+                                else:
+                                    strategy_label = strategy_used
+                                
+                                log_event(f"✅ SIGNAL GENERATED: {sym} [{strategy_label}] {sig.get('type')} @ {sig.get('entry'):.5f} | Confidence: {confidence} ({confidence_score}/3)")
+                                
+                                # Actualizar estadísticas de sesión
+                                if SESSION_SUMMARY_AVAILABLE:
+                                    session_summary.update_signal_stats(sym, confidence, shown=should_show, executed=can_auto_execute)
+                                
+                                # Añadir señal al dashboard inteligente
+                                try:
+                                    dashboard_signal_data = {
+                                        'timestamp': datetime.now().isoformat(),
+                                        'symbol': sym,
+                                        'strategy': strategy_used,
+                                        'direction': sig.get('type', 'BUY'),
+                                        'price': sig.get('entry', 0.0),
+                                        'sl_price': sig.get('sl', 0.0),
+                                        'tp_price': sig.get('tp', 0.0),
+                                        'confidence_level': confidence,
+                                        'confidence_score': confidence_score,
+                                        'confidence_details': confidence_details,
+                                        'status': 'PROPOSED',
+                                        'executed': False,
+                                        'lot_size': 0.01
+                                    }
+                                    add_signal_to_enhanced_dashboard(dashboard_signal_data)
+                                except Exception as e:
+                                    logger.error(f"Error añadiendo señal al dashboard inteligente: {e}")
+                                
+                                # 9. 🎨 PRESENTACIÓN DISCORD con colores según confianza
+                                confidence_emoji = "🔥" if confidence == "HIGH" else "⚡" if confidence == "MEDIUM-HIGH" else "📊"
+                                confidence_color = 0x00ff00 if confidence == "HIGH" else 0xffa500 if confidence == "MEDIUM-HIGH" else 0xffff00
+                                
+                                text = (
+                                    f"{confidence_emoji} **SEÑAL AUTOMÁTICA** (ID {sid})\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📊 **{sig['symbol']}** | Estrategia: `{strategy_label}`\n"
+                                    f"🔄 **{sig['type']}** | **CONFIDENCE: {confidence}** ({confidence_score}/3)\n"
+                                    f"\n📈 **Niveles de Trading:**\n"
+                                    f"• **Entrada:** `{sig['entry']:.5f}`\n"
+                                    f"• **Stop Loss:** `{sig['sl']:.5f}`\n"
+                                    f"• **Take Profit:** `{sig['tp']:.5f}`\n"
+                                    f"\n💡 **Análisis:** {sig.get('explanation','-')}\n"
+                                    f"\n⏱️ **Válida por:** {sig.get('expires', datetime.now(timezone.utc) + timedelta(minutes=30)).strftime('%H:%M')} GMT\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"🎮 **Comandos:** `/accept {sid}` | `/reject {sid}`"
+                                )
+                                
+                                # 10. ⚡ EJECUCIÓN AUTOMÁTICA: Solo HIGH puede auto-ejecutarse
+                                if can_auto_execute:
+                                    text += f"\n\n🤖 **AUTO-EJECUCIÓN HABILITADA** (Confianza HIGH)"
+                                
+                                try:
+                                    # Generar gráfico
+                                    chart_symbol = sig.get('symbol', sym)
+                                    if hasattr(chart_symbol, 'iloc'):
+                                        chart_symbol = str(chart_symbol.iloc[0]) if len(chart_symbol) > 0 else sym
+                                    elif not isinstance(chart_symbol, str):
+                                        chart_symbol = str(chart_symbol)
+                                    
+                                    logger.debug(f"Generating autosignal chart for symbol: {chart_symbol}")
+                                    chart = generate_chart(df2, symbol=chart_symbol, signal=sig)
+                                except Exception as e:
+                                    logger.error(f"Autosignal chart generation failed: {e}")
+                                    chart = None
+                                
+                                if chart:
+                                    await ch.send(text, file=discord.File(chart))
+                                    try:
+                                        os.remove(chart)
+                                    except Exception:
+                                        pass
+                                else:
+                                    await ch.send(text)
+                                # record now and fingerprint (persist)
+                                save_last_auto_sent(sym, now, fingerprint)
+                                state.last_auto_sent[sym] = {'time': now, 'sig': fingerprint}
+                            else:
+                                # Log señal rechazada
+                                reason = risk_info.get('reason', 'No hay señal básica válida') if risk_info else 'Sin información de riesgo'
+                                log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: {reason}")
+                        except Exception:
+                            log_event(f"❌ ERROR scanning {sym}", "ERROR")
+                            logger.exception('Error scanning symbol %s', sym)
+                    
+                    # Log resumen cada cierto tiempo con métricas MEJORADAS
+                    if scan_count % 30 == 0:  # Cada 30 escaneos (~45 minutos)
+                        # Obtener estadísticas del filtro de duplicados MEJORADAS
+                        filter_stats = filters_system.get_stats()
+                        
+                        # Calcular tiempo de sesión
+                        session_time = (datetime.now(timezone.utc) - bot_start_time).total_seconds() / 3600
+                        
+                        log_event(f"📊 SESIÓN #{scan_count}: {signals_found} señales | {session_time:.1f}h activo")
+                        
+                        # Log cooldowns generales
+                        cooldowns = filter_stats.get('cooldowns', {})
+                        log_event(f"🔄 Cooldowns: EURUSD={cooldowns.get('EURUSD', 600)}s, XAUUSD={cooldowns.get('XAUUSD', 1200)}s, BTCEUR={cooldowns.get('BTCEUR', 600)}s")
+                        
+                        # Log estado detallado de cada símbolo
+                        for symbol in AUTOSIGNAL_SYMBOLS:
+                            symbol_key = f'{symbol}_last_signal'
+                            if symbol_key in filter_stats:
+                                symbol_data = filter_stats[symbol_key]
+                                if isinstance(symbol_data, dict):
+                                    # Nuevo formato detallado
+                                    time_since = symbol_data.get('time_since', 'never')
+                                    confidence = symbol_data.get('confidence', 'unknown')
+                                    direction = symbol_data.get('direction', 'unknown')
+                                    zone = symbol_data.get('zone', 'unknown')
+                                    cooldown_remaining = symbol_data.get('cooldown_remaining', '0s')
+                                    
+                                    log_event(f"📈 {symbol}: {time_since} ({confidence}) - {direction} in {zone} - Cooldown: {cooldown_remaining}")
+                                else:
+                                    # Formato legacy
+                                    log_event(f"📈 {symbol}: {symbol_data}")
+                        
+                        # Log estadísticas del sistema de cooldown inteligente si está disponible
+                        if filter_stats.get('cooldown_manager_available', False):
+                            cooldown_stats = filter_stats.get('cooldown_manager_stats', {})
+                            symbols_tracked = cooldown_stats.get('symbols_tracked', 0)
+                            zones_tracked = cooldown_stats.get('zones_tracked', 0)
+                            log_event(f"🧠 COOLDOWN MANAGER: {symbols_tracked} symbols, {zones_tracked} zones tracked")
+                        
+                        # Generar resumen de sesión cada 2 horas
+                        if SESSION_SUMMARY_AVAILABLE and scan_count % 240 == 0:  # Cada 240 escaneos (~6 horas)
+                            session_summary.log_session_summary()
+            
+            await asyncio.sleep(AUTOSIGNAL_INTERVAL)
+        except Exception:
+            logger.exception('Auto-signal loop crashed; retrying in 30s')
+            await asyncio.sleep(30)
 
 
 @bot.tree.command(name="status")
@@ -888,8 +1343,6 @@ async def slash_logs_info(interaction: discord.Interaction):
         await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
         return
 
-    intelligent_logger = get_intelligent_logger()
-    current_log_file = intelligent_logger.current_log_file
     if current_log_file and os.path.exists(current_log_file):
         # Obtener información del archivo
         file_size = os.path.getsize(current_log_file)
@@ -1365,7 +1818,172 @@ async def slash_scan(interaction: discord.Interaction, symbols: str = '', strate
         await interaction.followup.send('\n'.join(lines))
 
 
-# Large autosignals command moved to services/commands.py
+@bot.tree.command(name="autosignals")
+@log_discord_command
+async def slash_autosignals(interaction: discord.Interaction):
+    """Muestra estado detallado de las señales automáticas con controles."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    # Mostrar estado detallado con botones de control
+    embed = discord.Embed(
+        title="🤖 Estado de Autosignals",
+        description=f"Sistema: {'🟢 **ACTIVO**' if state.autosignals else '🔴 **INACTIVO**'}",
+        color=0x00ff00 if state.autosignals else 0xff0000
+    )
+    
+    # Configuración actual
+    embed.add_field(
+        name="⚙️ Configuración",
+        value=(
+            f"• **Intervalo:** {AUTOSIGNAL_INTERVAL}s\n"
+            f"• **Símbolos:** {len(AUTOSIGNAL_SYMBOLS)} pares\n"
+            f"• **Tolerancia:** {AUTOSIGNAL_TOLERANCE_PIPS} pips"
+        ),
+        inline=True
+    )
+    
+    # Verificar canal
+    ch = await _find_signals_channel()
+    channel_status = f"#{ch.name} ✅" if ch else f"❌ '{SIGNALS_CHANNEL_NAME}' no encontrado"
+    
+    # Verificar MT5
+    try:
+        from mt5_client import initialize as mt5_initialize
+        mt5_ok = mt5_initialize()
+        mt5_status = "✅ Conectado" if mt5_ok else "❌ Desconectado"
+    except Exception:
+        mt5_status = "❌ Error"
+    
+    embed.add_field(
+        name="🔗 Conexiones",
+        value=(
+            f"• **Canal:** {channel_status}\n"
+            f"• **MT5:** {mt5_status}\n"
+            f"• **Filtros:** {'✅ Activos' if os.getenv('ADVANCED_FILTERS') == '1' else '❌ Inactivos'}"
+        ),
+        inline=True
+    )
+    
+    # Estrategias por símbolo
+    strategies_info = []
+    for symbol in AUTOSIGNAL_SYMBOLS:
+        cfg = RULES_CONFIG.get(symbol.upper(), {})
+        strategy = cfg.get('strategy', 'N/A')
+        enabled = "✅" if cfg.get('enabled', False) else "❌"
+        strategies_info.append(f"{enabled} **{symbol}:** `{strategy}`")
+    
+    embed.add_field(
+        name="📊 Estrategias por Par",
+        value="\n".join(strategies_info),
+        inline=False
+    )
+    
+    # Estadísticas recientes
+    if risk_manager:
+        try:
+            recent_perf = risk_manager.get_recent_performance(1)  # Último día
+            embed.add_field(
+                name="📈 Últimas 24h",
+                value=(
+                    f"• **Trades:** {recent_perf.get('total_trades', 0)}\n"
+                    f"• **Tasa acierto:** {recent_perf.get('win_rate', 0)*100:.1f}%\n"
+                    f"• **Racha actual:** {recent_perf.get('winning_streak', 0)}W / {recent_perf.get('losing_streak', 0)}L"
+                ),
+                inline=True
+            )
+        except Exception:
+            pass
+    
+    # Crear botones de control
+    class AutosignalsControlView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=300)  # 5 minutos de timeout
+        
+        @discord.ui.button(
+            label='🟢 Activar' if not state.autosignals else '🔴 Desactivar',
+            style=discord.ButtonStyle.success if not state.autosignals else discord.ButtonStyle.danger,
+            emoji='▶️' if not state.autosignals else '⏹️'
+        )
+        async def toggle_autosignals(self, interaction_btn: discord.Interaction, button: discord.ui.Button):
+            if interaction_btn.user.id != AUTHORIZED_USER_ID:
+                await interaction_btn.response.send_message('⛔ No autorizado', ephemeral=True)
+                return
+            
+            # Cambiar estado
+            new_state = not state.autosignals
+            state.autosignals = new_state
+            
+            log_event(f"🔄 AUTOSIGNALS {'ACTIVADAS' if new_state else 'DESACTIVADAS'} por usuario")
+            
+            try:
+                save_autosignals_state(new_state)
+            except Exception:
+                log_event("❌ Error guardando estado de autosignals", "ERROR")
+                logger.exception('Failed to save autosignals state')
+            
+            # Actualizar embed
+            new_embed = discord.Embed(
+                title="🤖 Estado de Autosignals",
+                description=f"Sistema: {'🟢 **ACTIVO**' if new_state else '🔴 **INACTIVO**'}",
+                color=0x00ff00 if new_state else 0xff0000
+            )
+            
+            # Configuración actual
+            new_embed.add_field(
+                name="⚙️ Configuración",
+                value=(
+                    f"• **Intervalo:** {AUTOSIGNAL_INTERVAL}s\n"
+                    f"• **Símbolos:** {len(AUTOSIGNAL_SYMBOLS)} pares\n"
+                    f"• **Tolerancia:** {AUTOSIGNAL_TOLERANCE_PIPS} pips"
+                ),
+                inline=True
+            )
+            
+            new_embed.add_field(
+                name="🔗 Conexiones",
+                value=(
+                    f"• **Canal:** {channel_status}\n"
+                    f"• **MT5:** {mt5_status}\n"
+                    f"• **Filtros:** {'✅ Activos' if os.getenv('ADVANCED_FILTERS') == '1' else '❌ Inactivos'}"
+                ),
+                inline=True
+            )
+            
+            new_embed.add_field(
+                name="📊 Estrategias por Par",
+                value="\n".join(strategies_info),
+                inline=False
+            )
+            
+            # Actualizar botón
+            button.label = '🟢 Activar' if not new_state else '🔴 Desactivar'
+            button.style = discord.ButtonStyle.success if not new_state else discord.ButtonStyle.danger
+            button.emoji = '▶️' if not new_state else '⏹️'
+            
+            status_msg = "✅ **Autosignals ACTIVADAS**" if new_state else "🔴 **Autosignals DESACTIVADAS**"
+            new_embed.set_footer(text=f"{status_msg} | Actualizado")
+            
+            await interaction_btn.response.edit_message(embed=new_embed, view=self)
+        
+        @discord.ui.button(
+            label='🔄 Actualizar',
+            style=discord.ButtonStyle.secondary,
+            emoji='🔄'
+        )
+        async def refresh_status(self, interaction_btn: discord.Interaction, button: discord.ui.Button):
+            if interaction_btn.user.id != AUTHORIZED_USER_ID:
+                await interaction_btn.response.send_message('⛔ No autorizado', ephemeral=True)
+                return
+            
+            # Recrear el embed con datos actualizados
+            await interaction_btn.response.send_message("🔄 Estado actualizado", ephemeral=True)
+    
+    embed.set_footer(text="Usa los botones para controlar las autosignals")
+    
+    view = AutosignalsControlView()
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="set_mt5_credentials")
@@ -1379,10 +1997,181 @@ async def slash_set_mt5_credentials(interaction: discord.Interaction):
     await interaction.response.send_modal(MT5CredentialsModal())
 
 
-# Pairs config command moved to services/commands.py
+@bot.tree.command(name="pairs_config")
+async def slash_pairs_config(interaction: discord.Interaction):
+    """Muestra la configuración actual de los pares principales (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="📊 Configuración de Pares Principales",
+        description="Estrategias y parámetros optimizados para cada par",
+        color=0x0099ff
+    )
+    
+    main_pairs = ['EURUSD', 'XAUUSD', 'BTCEUR']
+    
+    for symbol in main_pairs:
+        cfg = RULES_CONFIG.get(symbol, {})
+        
+        if not cfg:
+            continue
+            
+        status = "🟢 Activo" if cfg.get('enabled', False) else "🔴 Inactivo"
+        strategy = cfg.get('strategy', 'N/A')
+        risk = cfg.get('risk_per_trade', 0)
+        max_trades = cfg.get('max_daily_trades', 0)
+        rr_ratio = cfg.get('min_rr_ratio', 0)
+        
+        # Emojis por par
+        emoji = {"EURUSD": "🇪🇺", "XAUUSD": "🥇", "BTCEUR": "₿"}.get(symbol, "📈")
+        
+        embed.add_field(
+            name=f"{emoji} **{symbol}**",
+            value=(
+                f"**Estado:** {status}\n"
+                f"**Estrategia:** `{strategy}`\n"
+                f"**Riesgo:** {risk}% por trade\n"
+                f"**Trades/día:** {max_trades} máximo\n"
+                f"**R:R mínimo:** 1:{rr_ratio}\n"
+                f"**Descripción:** {cfg.get('description', 'N/A')}"
+            ),
+            inline=True
+        )
+    
+    # Configuración global
+    global_cfg = RULES_CONFIG.get('GLOBAL_SETTINGS', {})
+    embed.add_field(
+        name="🌐 **Configuración Global**",
+        value=(
+            f"**Riesgo total diario:** {global_cfg.get('max_total_risk', 0)}%\n"
+            f"**Trades totales/día:** {global_cfg.get('max_daily_trades_all', 0)}\n"
+            f"**Posiciones simultáneas:** {global_cfg.get('max_simultaneous_positions', 0)}\n"
+            f"**Límite drawdown:** {global_cfg.get('drawdown_limit', 0)}%"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="Usa '/set_strategy [par] [estrategia]' para cambiar configuración")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# Market overview command moved to services/commands.py
+@bot.tree.command(name="market_overview")
+async def slash_market_overview(interaction: discord.Interaction):
+    """Muestra un resumen del estado actual del mercado para los 3 pares (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        embed = discord.Embed(
+            title="🌍 Resumen del Mercado",
+            description="Estado actual de los 3 pares principales",
+            color=0x00ff88
+        )
+        
+        main_pairs = ['EURUSD', 'XAUUSD', 'BTCEUR']
+        
+        for symbol in main_pairs:
+            try:
+                # Obtener datos actuales
+                connect_mt5()
+                df = get_candles(symbol, TIMEFRAME, 50)
+                
+                if len(df) < 10:
+                    continue
+                
+                # Calcular indicadores básicos
+                current_price = df['close'].iloc[-1]
+                prev_price = df['close'].iloc[-2]
+                change = current_price - prev_price
+                change_pct = (change / prev_price) * 100
+                
+                # EMAs básicas
+                ema20 = df['close'].ewm(span=20).mean().iloc[-1]
+                ema50 = df['close'].ewm(span=50).mean().iloc[-1]
+                
+                # Tendencia
+                if current_price > ema20 > ema50:
+                    trend = "📈 Alcista"
+                elif current_price < ema20 < ema50:
+                    trend = "📉 Bajista"
+                else:
+                    trend = "➡️ Lateral"
+                
+                # Volatilidad
+                atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
+                volatility = "Alta" if atr > df['close'].std() else "Normal"
+                
+                # Emoji por par
+                emoji = {"EURUSD": "🇪🇺", "XAUUSD": "🥇", "BTCEUR": "₿"}.get(symbol, "📈")
+                
+                # Formatear precio según el símbolo
+                if symbol == 'XAUUSD':
+                    price_str = f"{current_price:.2f}"
+                    change_str = f"{change:+.2f}"
+                elif symbol == 'BTCEUR':
+                    price_str = f"{current_price:.0f}"
+                    change_str = f"{change:+.0f}"
+                else:  # EURUSD
+                    price_str = f"{current_price:.5f}"
+                    change_str = f"{change:+.5f}"
+                
+                embed.add_field(
+                    name=f"{emoji} **{symbol}**",
+                    value=(
+                        f"**Precio:** {price_str}\n"
+                        f"**Cambio:** {change_str} ({change_pct:+.2f}%)\n"
+                        f"**Tendencia:** {trend}\n"
+                        f"**Volatilidad:** {volatility}"
+                    ),
+                    inline=True
+                )
+                
+            except Exception as e:
+                embed.add_field(
+                    name=f"❌ **{symbol}**",
+                    value=f"Error obteniendo datos: {str(e)[:50]}...",
+                    inline=True
+                )
+        
+        # Información de sesión actual
+        now_utc = datetime.now(timezone.utc)
+        now_spain = now_utc.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=1)))  # España GMT+1
+        hour_utc = now_utc.hour
+        
+        if 0 <= hour_utc <= 9:
+            session = "🌅 Sesión Asiática (Tokio)"
+        elif 8 <= hour_utc <= 17:
+            session = "🌍 Sesión Europea (Londres)"
+        elif 13 <= hour_utc <= 22:
+            session = "🌎 Sesión Americana (Nueva York)"
+        else:
+            session = "🌙 Fuera de sesiones principales"
+        
+        if 13 <= hour_utc <= 17:
+            session += " | 🔥 **OVERLAP LONDRES-NY**"
+        
+        embed.add_field(
+            name="🕐 **Sesión Actual**",
+            value=(
+                f"{session}\n"
+                f"**Hora GMT:** {now_utc.strftime('%H:%M')}\n"
+                f"**Hora España:** {now_spain.strftime('%H:%M')} (GMT+1)"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Actualizado: {now_utc.strftime('%Y-%m-%d %H:%M')} GMT | {now_spain.strftime('%H:%M')} España")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo resumen del mercado: {e}")
 
 
 @bot.tree.command(name="set_strategy")
@@ -1521,7 +2310,79 @@ async def slash_strategy_performance(interaction: discord.Interaction, days: int
         await interaction.followup.send(f"❌ Error obteniendo performance: {e}")
 
 
-# Demo stats command moved to services/commands.py
+@bot.tree.command(name="demo_stats")
+async def slash_demo_stats(interaction: discord.Interaction):
+    """Muestra estadísticas específicas del modo demo (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        # Obtener balance actual
+        mt5_initialize()
+        account_info = mt5.account_info()
+        if not account_info:
+            await interaction.followup.send("❌ No se pudo conectar a MT5")
+            return
+        
+        balance = account_info.balance
+        equity = account_info.equity
+        margin = account_info.margin
+        free_margin = account_info.margin_free
+        
+        # Calcular estadísticas
+        initial_balance = 5000.0  # Balance inicial demo
+        total_pnl = balance - initial_balance
+        pnl_percentage = (total_pnl / initial_balance) * 100
+        
+        # Obtener posiciones abiertas
+        positions = mt5.positions_get()
+        open_positions = len(positions) if positions else 0
+        
+        # Calcular PnL de posiciones abiertas
+        open_pnl = sum(pos.profit for pos in positions) if positions else 0
+        
+        lines = [
+            f"💰 **ESTADÍSTICAS CUENTA DEMO**",
+            f"",
+            f"💵 **Balance y Equity:**",
+            f"• Balance inicial: ${initial_balance:,.2f}",
+            f"• Balance actual: ${balance:,.2f}",
+            f"• Equity: ${equity:,.2f}",
+            f"• PnL total: ${total_pnl:,.2f} ({pnl_percentage:+.2f}%)",
+            f"",
+            f"📊 **Margen:**",
+            f"• Margen usado: ${margin:,.2f}",
+            f"• Margen libre: ${free_margin:,.2f}",
+            f"• Nivel de margen: {(equity/margin*100):.1f}%" if margin > 0 else "• Nivel de margen: N/A",
+            f"",
+            f"🎯 **Posiciones:**",
+            f"• Posiciones abiertas: {open_positions}",
+            f"• PnL posiciones abiertas: ${open_pnl:,.2f}",
+            f"",
+            f"⚙️ **Configuración Actual:**",
+            f"• Modo: {'🟢 DEMO AGRESIVO' if os.getenv('DEMO_MODE') == '1' else '🔴 CONSERVADOR'}",
+            f"• Riesgo por trade: {os.getenv('DEFAULT_RISK_PCT', '1.0')}%",
+            f"• Trades máximos/día: {os.getenv('MAX_TRADES_PER_DAY', '12')}",
+            f"• Intervalo autosignals: {os.getenv('AUTOSIGNAL_INTERVAL', '30')}s"
+        ]
+        
+        # Añadir análisis de performance
+        if pnl_percentage > 5:
+            lines.append("🎉 **¡Excelente performance!**")
+        elif pnl_percentage > 0:
+            lines.append("✅ **Performance positiva**")
+        elif pnl_percentage > -5:
+            lines.append("🟡 **Performance neutral**")
+        else:
+            lines.append("🔴 **Revisar estrategias**")
+        
+        await interaction.followup.send("\n".join(lines))
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo estadísticas: {e}")
 
 
 @bot.tree.command(name="force_autosignal")
@@ -2236,10 +3097,132 @@ async def slash_performance(interaction: discord.Interaction, days: int = 30):
         await interaction.followup.send(f"❌ Error generando reporte: {e}")
 
 
-# Trailing status command moved to services/commands.py
+@bot.tree.command(name="trailing_status")
+async def slash_trailing_status(interaction: discord.Interaction):
+    """Muestra el estado de los trailing stops (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    if not TRAILING_STOPS_AVAILABLE or not trailing_manager:
+        await interaction.followup.send("❌ Sistema de trailing stops no disponible")
+        return
+    
+    try:
+        status = trailing_manager.get_trailing_status()
+        
+        if status['active_trails'] == 0:
+            await interaction.followup.send("📊 **Trailing Stops**\n\nNo hay posiciones con trailing stops activos")
+            return
+        
+        embed = discord.Embed(
+            title="📊 Estado de Trailing Stops",
+            description=f"**{status['active_trails']} posiciones** con trailing stops activos",
+            color=0x00ff88
+        )
+        
+        for pos_info in status['positions']:
+            ticket = pos_info['ticket']
+            symbol = pos_info['symbol']
+            
+            status_text = []
+            if pos_info['breakeven_moved']:
+                status_text.append("✅ Breakeven")
+            if pos_info['trailing_active']:
+                status_text.append("🔄 Trailing")
+            if pos_info['partial_closed']:
+                status_text.append("📉 Parcial")
+            
+            status_str = " | ".join(status_text) if status_text else "⏳ Esperando"
+            
+            embed.add_field(
+                name=f"🎯 **{symbol}** (#{ticket})",
+                value=(
+                    f"**Estado:** {status_str}\n"
+                    f"**Max Profit:** {pos_info['highest_profit']*100:.1f}%"
+                ),
+                inline=True
+            )
+        
+        embed.set_footer(text="Los trailing stops se actualizan cada 30 segundos")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo estado de trailing stops: {e}")
 
 
-# Risk status command moved to services/commands.py
+@bot.tree.command(name="risk_status")
+async def slash_risk_status(interaction: discord.Interaction):
+    """Muestra el estado actual de la gestión de riesgo (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    if risk_manager is None:
+        await interaction.followup.send("❌ Gestor de riesgo no disponible")
+        return
+    
+    try:
+        # Obtener balance de la cuenta
+        mt5_initialize()
+        account_info = mt5.account_info()
+        if not account_info:
+            await interaction.followup.send("❌ No se pudo obtener información de la cuenta MT5")
+            return
+        
+        balance = account_info.balance
+        
+        # Obtener estadísticas del día
+        today = datetime.now(timezone.utc).date().isoformat()
+        daily_stats = risk_manager.get_daily_stats(today)
+        
+        # Obtener performance reciente
+        recent_perf = risk_manager.get_recent_performance()
+        
+        # Obtener posiciones abiertas
+        positions = mt5.positions_get()
+        open_positions = len(positions) if positions else 0
+        
+        lines = [
+            f"🛡️ **ESTADO DE GESTIÓN DE RIESGO**",
+            f"",
+            f"💰 **Cuenta:**",
+            f"• Balance: {balance:.2f}",
+            f"• Posiciones abiertas: {open_positions}",
+            f"",
+            f"📅 **Hoy ({today}):**",
+            f"• Trades realizados: {daily_stats['total_trades']}",
+            f"• Trades ganadores: {daily_stats['winning_trades']}",
+            f"• Trades perdedores: {daily_stats['losing_trades']}",
+            f"• PnL del día: {daily_stats['total_pnl']:.2f}",
+            f"• Riesgo usado: {daily_stats['risk_used']:.2f}",
+            f"",
+            f"📊 **Performance Reciente:**",
+            f"• Racha ganadora: {recent_perf['winning_streak']}",
+            f"• Racha perdedora: {recent_perf['losing_streak']}",
+            f"• Tasa de acierto: {recent_perf['win_rate']*100:.1f}%",
+            f"",
+            f"⚙️ **Límites Configurados:**"
+        ]
+        
+        # Obtener configuración global
+        global_config = risk_manager.rules_config.get('GLOBAL_SETTINGS', {})
+        lines.extend([
+            f"• Riesgo máximo diario: {global_config.get('max_total_risk', 1.5)}%",
+            f"• Trades máximos por día: {global_config.get('max_daily_trades_all', 5)}",
+            f"• Posiciones máximas: {global_config.get('max_simultaneous_positions', 3)}",
+            f"• Límite de drawdown: {global_config.get('drawdown_limit', 8.0)}%"
+        ])
+        
+        await interaction.followup.send("\n".join(lines))
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo estado de riesgo: {e}")
 
 
 # ----------------------
@@ -2303,28 +3286,817 @@ async def mt5_login(ctx):
     except Exception as e:
         await ctx.send(f"❌ Error al loguear en MT5: {e}")
 
-# Background loops moved to services/autosignals.py
+async def _trailing_stops_loop():
+    """Loop en background para actualizar trailing stops"""
+    await bot.wait_until_ready()
+    logger.info('Trailing stops loop started')
+    
+    while True:
+        try:
+            if TRAILING_STOPS_AVAILABLE and trailing_manager:
+                trailing_manager.update_all_trailing_stops()
+            await asyncio.sleep(30)  # Actualizar cada 30 segundos
+        except Exception:
+            logger.exception('Trailing stops loop crashed; retrying in 60s')
+            await asyncio.sleep(60)
 
 
-# Next opening command moved to services/commands.py
+async def _market_opening_loop():
+    """Loop en background para monitorear aperturas de mercado"""
+    await bot.wait_until_ready()
+    logger.info('Market opening alerts loop started')
+    
+    last_alert_sent = {}  # Para evitar spam de alertas
+    
+    while True:
+        try:
+            if MARKET_OPENING_AVAILABLE and market_opening_system:
+                # Obtener próxima apertura
+                market, opening_time, minutes_until = market_opening_system.get_next_market_opening()
+                
+                if market and opening_time:
+                    # Verificar si debe enviar alerta
+                    should_alert, alert_type = market_opening_system.should_send_alert(market, minutes_until)
+                    
+                    if should_alert:
+                        # Evitar spam - solo una alerta por tipo por mercado por día
+                        alert_key = f"{market}_{alert_type}_{opening_time.date()}"
+                        
+                        if alert_key not in last_alert_sent:
+                            # Buscar canal de señales
+                            ch = await _find_signals_channel()
+                            
+                            if ch:
+                                # Generar estrategias para pares principales de este mercado
+                                market_info = market_opening_system.market_sessions.get(market, {})
+                                main_pairs = market_info.get('main_pairs', [])
+                                
+                                strategies = []
+                                for symbol in main_pairs:
+                                    try:
+                                        strategy = market_opening_system.generate_opening_strategy(symbol, market)
+                                        if 'error' not in strategy:
+                                            strategies.append(strategy)
+                                    except Exception as e:
+                                        logger.exception(f"Error generating strategy for {symbol}: {e}")
+                                
+                                # Formatear y enviar alerta
+                                alert_message = market_opening_system.format_opening_alert(market, alert_type, strategies)
+                                
+                                try:
+                                    await ch.send(alert_message)
+                                    last_alert_sent[alert_key] = datetime.now(timezone.utc)
+                                    bot_logger.market_opening_alert(market, alert_type)
+                                except Exception as e:
+                                    logger.exception(f"Error sending market opening alert: {e}")
+            
+            # Verificar cada 5 minutos
+            await asyncio.sleep(300)
+            
+        except Exception:
+            logger.exception('Market opening loop crashed; retrying in 10 minutes')
+            await asyncio.sleep(600)
 
 
-# Pre-market analysis command moved to services/commands.py
+@bot.tree.command(name="next_opening")
+async def slash_next_opening(interaction: discord.Interaction):
+    """Muestra información sobre la próxima apertura de mercado (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    if not MARKET_OPENING_AVAILABLE:
+        await interaction.followup.send("❌ Sistema de apertura de mercados no disponible")
+        return
+    
+    try:
+        market, opening_time, minutes_until = market_opening_system.get_next_market_opening()
+        
+        if not market:
+            await interaction.followup.send("❌ No se pudo determinar la próxima apertura")
+            return
+        
+        now_utc = datetime.now(timezone.utc)
+        now_spain = now_utc + timedelta(hours=1)
+        
+        # Información del mercado
+        market_info = market_opening_system.market_sessions.get(market, {})
+        main_pairs = market_info.get('main_pairs', [])
+        
+        embed = discord.Embed(
+            title=f"⏰ Próxima Apertura: {market}",
+            description=f"Información sobre la siguiente sesión de trading",
+            color=0xff9500
+        )
+        
+        # Tiempo hasta apertura
+        if minutes_until > 60:
+            hours = minutes_until // 60
+            mins = minutes_until % 60
+            time_str = f"{hours}h {mins}m"
+        else:
+            time_str = f"{minutes_until}m"
+        
+        embed.add_field(
+            name="🕐 **Tiempo hasta Apertura**",
+            value=(
+                f"**{time_str}**\n"
+                f"Apertura: {opening_time.strftime('%H:%M')} GMT\n"
+                f"España: {(opening_time + timedelta(hours=1)).strftime('%H:%M')}"
+            ),
+            inline=True
+        )
+        
+        # Pares principales
+        if main_pairs:
+            pairs_text = "\n".join([
+                f"{'🇪🇺' if p == 'EURUSD' else '🥇' if p == 'XAUUSD' else '₿'} {p}" 
+                for p in main_pairs
+            ])
+            embed.add_field(
+                name="📊 **Pares Principales**",
+                value=pairs_text,
+                inline=True
+            )
+        
+        # Estado actual
+        if minutes_until <= 30:
+            status = "🔥 **INMINENTE**"
+            color = 0xff0000
+        elif minutes_until <= 120:
+            status = "⚡ **PRÓXIMA**"
+            color = 0xff9500
+        else:
+            status = "⏳ **LEJANA**"
+            color = 0x00ff88
+        
+        embed.color = color
+        embed.add_field(
+            name="📈 **Estado**",
+            value=status,
+            inline=True
+        )
+        
+        # Consejos
+        if minutes_until <= 60:
+            embed.add_field(
+                name="💡 **Preparación**",
+                value=(
+                    "• Revisa análisis pre-mercado\n"
+                    "• Prepara niveles clave\n"
+                    "• Configura alertas\n"
+                    "• Mantente atento a noticias"
+                ),
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Actualizado: {now_spain.strftime('%H:%M')} España")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo información de apertura: {e}")
 
 
-# Opening alerts command moved to services/commands.py
+@bot.tree.command(name="pre_market_analysis")
+@discord.app_commands.describe(symbol="Símbolo para análisis pre-mercado (EURUSD, XAUUSD, BTCEUR)")
+@discord.app_commands.choices(symbol=[
+    discord.app_commands.Choice(name="🇪🇺 EURUSD", value="EURUSD"),
+    discord.app_commands.Choice(name="🥇 XAUUSD", value="XAUUSD"),
+    discord.app_commands.Choice(name="₿ BTCEUR", value="BTCEUR")
+])
+async def slash_pre_market_analysis(interaction: discord.Interaction, symbol: str = 'EURUSD'):
+    """Análisis pre-mercado detallado para anticipar movimientos de apertura (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    if not MARKET_OPENING_AVAILABLE:
+        await interaction.followup.send("❌ Sistema de análisis pre-mercado no disponible")
+        return
+    
+    try:
+        # Obtener análisis pre-mercado
+        analysis = market_opening_system.analyze_pre_market_conditions(symbol)
+        
+        if 'error' in analysis:
+            await interaction.followup.send(f"❌ Error en análisis: {analysis['error']}")
+            return
+        
+        # Generar estrategia
+        market = 'LONDON' if symbol in ['EURUSD', 'XAUUSD'] else 'CRYPTO'
+        strategy = market_opening_system.generate_opening_strategy(symbol, market)
+        
+        emoji = {"EURUSD": "🇪🇺", "XAUUSD": "🥇", "BTCEUR": "₿"}.get(symbol, "📈")
+        
+        embed = discord.Embed(
+            title=f"{emoji} Análisis Pre-Mercado: {symbol}",
+            description="Condiciones actuales y estrategia para apertura",
+            color=0x00ff88
+        )
+        
+        # Formatear precio según símbolo
+        if symbol == 'XAUUSD':
+            price_str = f"{analysis['last_close']:.2f}"
+            range_str = f"{analysis['range_size']:.2f}"
+        elif symbol == 'BTCEUR':
+            price_str = f"{analysis['last_close']:.0f}"
+            range_str = f"{analysis['range_size']:.0f}"
+        else:  # EURUSD
+            price_str = f"{analysis['last_close']:.5f}"
+            range_str = f"{analysis['range_size']:.5f}"
+        
+        # Condiciones actuales
+        embed.add_field(
+            name="📊 **Condiciones Actuales**",
+            value=(
+                f"**Precio:** {price_str}\n"
+                f"**Momentum:** {analysis['momentum']}\n"
+                f"**Volatilidad:** {analysis['volatility']:.2f}%\n"
+                f"**Rango 8h:** {range_str}"
+            ),
+            inline=True
+        )
+        
+        # Formatear niveles clave
+        if symbol == 'XAUUSD':
+            resistance_str = f"{analysis['resistance']:.2f}"
+            support_str = f"{analysis['support']:.2f}"
+        elif symbol == 'BTCEUR':
+            resistance_str = f"{analysis['resistance']:.0f}"
+            support_str = f"{analysis['support']:.0f}"
+        else:  # EURUSD
+            resistance_str = f"{analysis['resistance']:.5f}"
+            support_str = f"{analysis['support']:.5f}"
+        
+        # Niveles clave
+        embed.add_field(
+            name="🎯 **Niveles Clave**",
+            value=(
+                f"**Resistencia:** {resistance_str}\n"
+                f"**Soporte:** {support_str}\n"
+                f"**Dist. Resist.:** {analysis['dist_to_resistance']:.2f}%\n"
+                f"**Dist. Soporte:** {analysis['dist_to_support']:.2f}%"
+            ),
+            inline=True
+        )
+        
+        # Potencial de gap
+        gap_info = analysis['gap_potential']
+        gap_emoji = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(gap_info['probability'], "⚪")
+        
+        embed.add_field(
+            name="⚡ **Potencial de Gap**",
+            value=(
+                f"{gap_emoji} **Probabilidad:** {gap_info['probability']}\n"
+                f"📈 **Dirección:** {gap_info['expected_direction']}\n"
+                f"📊 **Momentum:** {gap_info['momentum_score']}/3"
+            ),
+            inline=True
+        )
+        
+        # Estrategias recomendadas
+        if 'error' not in strategy and strategy.get('recommendations'):
+            strategy_text = []
+            for i, rec in enumerate(strategy['recommendations'][:3], 1):  # Máximo 3
+                confidence_emoji = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}.get(rec['confidence'], "⚪")
+                
+                if rec['type'] in ['BUY', 'SELL']:
+                    strategy_text.append(
+                        f"{confidence_emoji} **{rec['type']}**\n"
+                        f"• {rec['reason']}\n"
+                        f"• Entrada: {rec['entry_zone']}\n"
+                    )
+                elif rec['type'] == 'GAP_PLAY':
+                    strategy_text.append(
+                        f"{confidence_emoji} **GAP {rec['direction']}**\n"
+                        f"• {rec['reason']}\n"
+                    )
+                elif rec['type'] == 'BREAKOUT':
+                    strategy_text.append(
+                        f"{confidence_emoji} **BREAKOUT**\n"
+                        f"• {rec['reason']}\n"
+                    )
+            
+            if strategy_text:
+                embed.add_field(
+                    name="🎯 **Estrategias Recomendadas**",
+                    value="\n\n".join(strategy_text),
+                    inline=False
+                )
+        
+        # Próxima apertura relevante
+        market_name, opening_time, minutes_until = market_opening_system.get_next_market_opening()
+        if market_name and minutes_until:
+            if minutes_until <= 120:  # Próximas 2 horas
+                embed.add_field(
+                    name="⏰ **Próxima Apertura Relevante**",
+                    value=(
+                        f"**{market_name}** en {minutes_until}m\n"
+                        f"Apertura: {opening_time.strftime('%H:%M')} GMT"
+                    ),
+                    inline=True
+                )
+        
+        now_spain = datetime.now(timezone.utc) + timedelta(hours=1)
+        embed.set_footer(text=f"Análisis: {now_spain.strftime('%H:%M')} España")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error en análisis pre-mercado: {e}")
 
 
-# Period status command moved to services/commands.py
+@bot.tree.command(name="opening_alerts")
+@discord.app_commands.describe(enabled="Activar/desactivar alertas de apertura")
+@discord.app_commands.choices(enabled=[
+    discord.app_commands.Choice(name="✅ Activar", value="true"),
+    discord.app_commands.Choice(name="❌ Desactivar", value="false")
+])
+async def slash_opening_alerts(interaction: discord.Interaction, enabled: str = None):
+    """Configura las alertas automáticas de apertura de mercado (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    if not MARKET_OPENING_AVAILABLE:
+        await interaction.response.send_message("❌ Sistema de alertas de apertura no disponible", ephemeral=True)
+        return
+    
+    # Si no se especifica enabled, mostrar estado actual
+    if enabled is None:
+        embed = discord.Embed(
+            title="🚨 Estado de Alertas de Apertura",
+            description="Configuración actual del sistema de alertas",
+            color=0x00ff88
+        )
+        
+        embed.add_field(
+            name="📊 **Sistema**",
+            value=f"{'🟢 ACTIVO' if MARKET_OPENING_AVAILABLE else '🔴 INACTIVO'}",
+            inline=True
+        )
+        
+        # Próximas alertas
+        market, opening_time, minutes_until = market_opening_system.get_next_market_opening()
+        if market:
+            should_alert, alert_type = market_opening_system.should_send_alert(market, minutes_until)
+            
+            embed.add_field(
+                name="⏰ **Próxima Alerta**",
+                value=(
+                    f"**Mercado:** {market}\n"
+                    f"**Tipo:** {alert_type or 'Ninguna próxima'}\n"
+                    f"**En:** {minutes_until}m"
+                ),
+                inline=True
+            )
+        
+        embed.add_field(
+            name="🔔 **Tipos de Alerta**",
+            value=(
+                "• **Pre-Market:** 30m antes\n"
+                "• **Opening:** 15m antes\n"
+                "• **Post-Opening:** 15m después"
+            ),
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    # Configurar alertas (por ahora solo mostrar confirmación)
+    is_enabled = enabled.lower() == 'true'
+    
+    embed = discord.Embed(
+        title="✅ Alertas de Apertura Configuradas",
+        description=f"Las alertas han sido {'activadas' if is_enabled else 'desactivadas'}",
+        color=0x00ff00 if is_enabled else 0xff0000
+    )
+    
+    if is_enabled:
+        embed.add_field(
+            name="🔔 **Alertas Activas**",
+            value=(
+                "• Pre-Market (30m antes)\n"
+                "• Apertura Inminente (15m antes)\n"
+                "• Post-Apertura (15m después)\n"
+                "\nSe enviarán al canal #signals"
+            ),
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# Backtest summary command moved to services/commands.py
+@bot.tree.command(name="period_status")
+@log_discord_command
+async def slash_period_status(interaction: discord.Interaction):
+    """Muestra el estado del período actual (5 trades/12h) (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        period_status = get_period_status()
+        
+        embed = discord.Embed(
+            title="📊 Estado del Período Actual",
+            description="Sistema de límites por período (12 horas)",
+            color=0xff6b6b if period_status['period_full'] else 0x00ff88
+        )
+        
+        # Estado actual
+        embed.add_field(
+            name="⏰ **Período Actual**",
+            value=f"**{period_status['current_period']} UTC**",
+            inline=True
+        )
+        
+        # Trades utilizados
+        trades_used = period_status['trades_current_period']
+        max_trades = period_status['max_trades_per_period']
+        progress_bar = "🟩" * trades_used + "⬜" * (max_trades - trades_used)
+        
+        embed.add_field(
+            name="📈 **Trades Utilizados**",
+            value=f"**{trades_used}/{max_trades}**\n{progress_bar}",
+            inline=True
+        )
+        
+        # Trades restantes
+        embed.add_field(
+            name="🎯 **Trades Restantes**",
+            value=f"**{period_status['trades_remaining']}**",
+            inline=True
+        )
+        
+        # Próximo reinicio
+        hours_until = period_status['time_until_reset'].total_seconds() / 3600
+        embed.add_field(
+            name="🔄 **Próximo Reinicio**",
+            value=(
+                f"**{period_status['next_reset'].strftime('%H:%M')} UTC**\n"
+                f"En {hours_until:.1f} horas"
+            ),
+            inline=True
+        )
+        
+        # Estado
+        status_emoji = "🔴 COMPLETO" if period_status['period_full'] else "🟢 DISPONIBLE"
+        embed.add_field(
+            name="🚦 **Estado**",
+            value=status_emoji,
+            inline=True
+        )
+        
+        # Información adicional
+        embed.add_field(
+            name="ℹ️ **Información**",
+            value=(
+                "• Los períodos se reinician cada 12 horas\n"
+                "• Horarios: 00:00-12:00 y 12:00-24:00 UTC\n"
+                "• Límite independiente del límite diario"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Trades diarios: {state.trades_today}/{MAX_TRADES_PER_DAY}")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo estado del período: {e}")
 
 
-# Cooldown status command moved to services/commands.py
+@bot.tree.command(name="backtest_summary")
+@log_discord_command
+async def slash_backtest_summary(interaction: discord.Interaction):
+    """Muestra resumen completo del backtest automático (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        # Obtener estadísticas del backtest tracker
+        stats = backtest_tracker.get_comprehensive_stats()
+        
+        embed = discord.Embed(
+            title="📊 Resumen de Backtest Automático",
+            description="Estadísticas completas del sistema de backtesting",
+            color=0x00ff88
+        )
+        
+        # Estadísticas generales
+        total_signals = stats.get('total_signals', 0)
+        executed_signals = stats.get('executed_signals', 0)
+        win_rate = stats.get('win_rate', 0)
+        
+        embed.add_field(
+            name="📈 **Señales Totales**",
+            value=f"**{total_signals}**",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="✅ **Ejecutadas**",
+            value=f"**{executed_signals}**",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎯 **Win Rate**",
+            value=f"**{win_rate:.1f}%**",
+            inline=True
+        )
+        
+        # Rendimiento por símbolo
+        symbol_stats = stats.get('by_symbol', {})
+        if symbol_stats:
+            symbol_text = ""
+            for symbol, data in symbol_stats.items():
+                symbol_text += f"**{symbol}:** {data.get('executed', 0)} trades, {data.get('win_rate', 0):.1f}% WR\n"
+            
+            embed.add_field(
+                name="📊 **Por Símbolo**",
+                value=symbol_text or "Sin datos",
+                inline=False
+            )
+        
+        # Profit Factor y Expectancy
+        profit_factor = stats.get('profit_factor', 0)
+        expectancy = stats.get('expectancy', 0)
+        
+        embed.add_field(
+            name="💰 **Profit Factor**",
+            value=f"**{profit_factor:.2f}**",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📊 **Expectancy**",
+            value=f"**{expectancy:.2f}**",
+            inline=True
+        )
+        
+        # Drawdown
+        max_drawdown = stats.get('max_drawdown', 0)
+        current_drawdown = stats.get('current_drawdown', 0)
+        
+        embed.add_field(
+            name="📉 **Drawdown**",
+            value=f"Actual: **{current_drawdown:.1f}%**\nMáximo: **{max_drawdown:.1f}%**",
+            inline=True
+        )
+        
+        # Información del dashboard
+        embed.add_field(
+            name="🌐 **Dashboard Live**",
+            value=(
+                f"📁 Archivo: `live_dashboard.html`\n"
+                f"🔄 Actualización: Cada 5 minutos\n"
+                f"📊 Métricas: Balance, trades, equity curve"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo resumen de backtest: {e}")
 
 
-# Live dashboard command moved to services/commands.py
+@bot.tree.command(name="cooldown_status")
+@log_discord_command
+async def slash_cooldown_status(interaction: discord.Interaction):
+    """Muestra el estado actual de cooldowns y filtros de duplicados (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+    
+    try:
+        # Obtener estadísticas del filtro de duplicados
+        filter_stats = filters_system.get_stats()
+        
+        embed = discord.Embed(
+            title="🔄 Estado de Cooldowns y Filtros",
+            color=0x3498db,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Información general
+        embed.add_field(
+            name="📊 Información General",
+            value=f"• Símbolos rastreados: {filter_stats.get('symbols_tracked', 0)}\n"
+                  f"• Sistema inteligente: {'✅ Activo' if filter_stats.get('cooldown_manager_available', False) else '❌ No disponible'}\n"
+                  f"• Intervalo base: {filter_stats.get('base_interval', 90)}s",
+            inline=False
+        )
+        
+        # Cooldowns por símbolo
+        cooldowns = filter_stats.get('cooldowns', {})
+        cooldown_text = ""
+        for symbol, cooldown in cooldowns.items():
+            cooldown_text += f"• {symbol}: {cooldown}s ({cooldown//60}min)\n"
+        
+        if cooldown_text:
+            embed.add_field(
+                name="⏱️ Cooldowns por Símbolo",
+                value=cooldown_text,
+                inline=True
+            )
+        
+        # Cooldowns por zona/dirección
+        zone_cooldowns = filter_stats.get('zone_cooldowns', {})
+        if zone_cooldowns:
+            zone_text = ""
+            for symbol, directions in zone_cooldowns.items():
+                zone_text += f"**{symbol}:**\n"
+                for direction, cooldown in directions.items():
+                    zone_text += f"  • {direction}: {cooldown}s ({cooldown//60}min)\n"
+            
+            embed.add_field(
+                name="🎯 Cooldowns por Zona/Dirección",
+                value=zone_text[:1024],  # Limitar a 1024 caracteres
+                inline=True
+            )
+        
+        # Estado actual de cada símbolo
+        symbol_status = ""
+        for symbol in ['EURUSD', 'XAUUSD', 'BTCEUR']:
+            symbol_key = f'{symbol}_last_signal'
+            if symbol_key in filter_stats:
+                symbol_data = filter_stats[symbol_key]
+                if isinstance(symbol_data, dict):
+                    time_since = symbol_data.get('time_since', 'never')
+                    confidence = symbol_data.get('confidence', 'unknown')
+                    direction = symbol_data.get('direction', 'unknown')
+                    cooldown_remaining = symbol_data.get('cooldown_remaining', '0s')
+                    
+                    symbol_status += f"**{symbol}:**\n"
+                    symbol_status += f"  • Última: {time_since} ({confidence})\n"
+                    symbol_status += f"  • Dirección: {direction}\n"
+                    symbol_status += f"  • Cooldown restante: {cooldown_remaining}\n\n"
+                else:
+                    symbol_status += f"**{symbol}:** {symbol_data}\n\n"
+        
+        if symbol_status:
+            embed.add_field(
+                name="📈 Estado Actual por Símbolo",
+                value=symbol_status[:1024],  # Limitar a 1024 caracteres
+                inline=False
+            )
+        
+        # Estadísticas del sistema inteligente si está disponible
+        if filter_stats.get('cooldown_manager_available', False):
+            cooldown_stats = filter_stats.get('cooldown_manager_stats', {})
+            if cooldown_stats:
+                symbols_tracked = cooldown_stats.get('symbols_tracked', 0)
+                zones_tracked = cooldown_stats.get('zones_tracked', 0)
+                
+                embed.add_field(
+                    name="🧠 Sistema de Cooldown Inteligente",
+                    value=f"• Símbolos activos: {symbols_tracked}\n"
+                          f"• Zonas rastreadas: {zones_tracked}\n"
+                          f"• Estado: ✅ Operativo",
+                    inline=False
+                )
+        
+        # Tolerancias
+        tolerances = filter_stats.get('tolerances', {})
+        if tolerances:
+            tolerance_text = ""
+            for symbol, tolerance in tolerances.items():
+                if symbol == 'XAUUSD':
+                    tolerance_text += f"• {symbol}: {tolerance} puntos\n"
+                elif symbol == 'EURUSD':
+                    tolerance_text += f"• {symbol}: {tolerance*10000:.1f} pips\n"
+                else:
+                    tolerance_text += f"• {symbol}: {tolerance}\n"
+            
+            embed.add_field(
+                name="📏 Tolerancias de Precio",
+                value=tolerance_text,
+                inline=True
+            )
+        
+        embed.set_footer(text="Sistema de filtros anti-spam activo")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        logger.error(f"Error en cooldown_status: {e}")
+        await interaction.response.send_message(f"❌ Error obteniendo estado de cooldowns: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="live_dashboard")
+@log_discord_command
+async def slash_live_dashboard(interaction: discord.Interaction):
+    """Muestra estado del dashboard live y métricas en tiempo real (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        # Verificar si el archivo existe
+        dashboard_path = "live_dashboard.html"
+        dashboard_exists = os.path.exists(dashboard_path)
+        
+        embed = discord.Embed(
+            title="🌐 Estado del Dashboard Live",
+            description="Información del dashboard en tiempo real",
+            color=0x00ff88 if dashboard_exists else 0xff6b6b
+        )
+        
+        # Estado del archivo
+        if dashboard_exists:
+            file_size = os.path.getsize(dashboard_path)
+            file_size_kb = file_size / 1024
+            last_modified = datetime.fromtimestamp(os.path.getmtime(dashboard_path))
+            
+            embed.add_field(
+                name="📁 **Archivo**",
+                value=(
+                    f"✅ **Existe:** `{dashboard_path}`\n"
+                    f"📊 **Tamaño:** {file_size_kb:.1f} KB\n"
+                    f"🕒 **Modificado:** {last_modified.strftime('%H:%M:%S')}"
+                ),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📁 **Archivo**",
+                value=f"❌ **No encontrado:** `{dashboard_path}`",
+                inline=False
+            )
+        
+        # Métricas actuales del bot
+        embed.add_field(
+            name="🤖 **Bot Stats**",
+            value=(
+                f"📈 **Trades hoy:** {state.trades_today}/{MAX_TRADES_PER_DAY}\n"
+                f"⏰ **Período:** {state.trades_current_period}/{MAX_TRADES_PER_PERIOD}\n"
+                f"🎯 **Señales pendientes:** {len(state.pending_signals)}"
+            ),
+            inline=True
+        )
+        
+        # Estado de autosignals
+        embed.add_field(
+            name="🔄 **Autosignals**",
+            value=(
+                f"{'🟢 ACTIVO' if state.autosignals else '🔴 INACTIVO'}\n"
+                f"**Símbolos:** {', '.join(AUTOSIGNAL_SYMBOLS)}\n"
+                f"**Intervalo:** {AUTOSIGNAL_INTERVAL}s"
+            ),
+            inline=True
+        )
+        
+        # Configuración del dashboard
+        embed.add_field(
+            name="⚙️ **Configuración**",
+            value=(
+                "🔄 **Auto-refresh:** 5 minutos\n"
+                "📊 **Métricas:** Balance, trades, equity\n"
+                "📈 **Gráficos:** Rendimiento por símbolo\n"
+                "🕒 **Histórico:** Últimas 24 horas"
+            ),
+            inline=False
+        )
+        
+        # Instrucciones de acceso
+        embed.add_field(
+            name="🌐 **Acceso**",
+            value=(
+                f"1. Abrir archivo: `{dashboard_path}`\n"
+                "2. Usar navegador web\n"
+                "3. Se actualiza automáticamente cada 5 min\n"
+                "4. Compatible con todos los navegadores"
+            ),
+            inline=False
+        )
+        
+        if dashboard_exists:
+            embed.set_footer(text="✅ Dashboard operativo - Actualización automática activa")
+        else:
+            embed.set_footer(text="❌ Dashboard no disponible - Verificar sistema")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error obteniendo estado del dashboard: {e}")
 
 
 # ======================
@@ -2362,8 +4134,6 @@ if __name__ == '__main__':
             pass
         
         # Información final del archivo de log
-        intelligent_logger = get_intelligent_logger()
-        current_log_file = intelligent_logger.current_log_file
         if current_log_file and os.path.exists(current_log_file):
             file_size = os.path.getsize(current_log_file)
             file_size_mb = file_size / (1024 * 1024)
