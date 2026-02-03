@@ -16,17 +16,8 @@ import pandas as pd
 # Imports del core refactorizado
 from core.engine import get_trading_engine
 from strategies.eurusd import create_eurusd_strategy
-from strategies.xauusd import create_xauusd_strategy
-
-# Import opcional de BTCEUR
-try:
-    from strategies.btceur import create_btceur_strategy
-    BTCEUR_AVAILABLE = True
-except ImportError:
-    BTCEUR_AVAILABLE = False
-    def create_btceur_strategy():
-        """Fallback para BTCEUR"""
-        return create_eurusd_strategy()  # Usar EURUSD como fallback
+from strategies.xauusd import create_xauusd_strategy  # Asumiendo que existe
+from strategies.btceur import create_btceur_strategy  # Asumiendo que existe
 
 logger = logging.getLogger(__name__)
 
@@ -211,11 +202,10 @@ SYMBOL = "EURUSD"  # Para compatibilidad
 # Funciones auxiliares que pueden estar siendo usadas
 def _rsi(series: pd.Series, period: int = 14):
     """RSI calculation for compatibility"""
-    import numpy as np
     delta = series.diff()
     up = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
     down = -delta.clip(upper=0).ewm(alpha=1/period, adjust=False).mean()
-    rs = up / down.replace(0, np.nan)
+    rs = up / down.replace(0, pd.np.nan)
     return 100 - (100 / (1 + rs))
 
 def _atr(df: pd.DataFrame, period: int = 14):

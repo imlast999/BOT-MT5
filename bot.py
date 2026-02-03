@@ -24,21 +24,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# local modules
+# ============================================================================
+# IMPORTS CONSOLIDADOS - NUEVA ARQUITECTURA
+# ============================================================================
+
+# Core system (consolidado)
+from core import (
+    trading_engine, 
+    get_current_period_start, 
+    BotState,
+    get_risk_manager,
+    get_filters_system
+)
+
+# Services (consolidado)
+from services import (
+    log_event, 
+    log_signal_evaluation, 
+    log_command,
+    execution_service,
+    dashboard_service,
+    start_enhanced_dashboard,
+    stop_enhanced_dashboard,
+    add_signal_to_enhanced_dashboard,
+    update_dashboard_stats
+)
+
+# Signals dispatcher (simplificado)
+from signals import _detect_signal_wrapper
+
+# Módulos específicos que se mantienen
 from mt5_client import initialize as mt5_initialize, get_candles, shutdown as mt5_shutdown, login as mt5_login, place_order
-from signals import detect_signal, detect_signal_advanced
 from charts import generate_chart
 from secrets_store import save_credentials, load_credentials, clear_credentials
-from risk_manager import create_risk_manager
-from trading_filters import create_consolidated_filter, should_execute_signal
 from backtest_tracker import backtest_tracker
 import MetaTrader5 as mt5
 from position_manager import list_positions, close_position
-from live_dashboard import start_enhanced_dashboard, stop_enhanced_dashboard, add_signal_to_enhanced_dashboard, update_dashboard_stats
 
-# Nuevos sistemas
-from confidence_system import confidence_system
-from duplicate_filter import duplicate_filter
+# ============================================================================
+# SISTEMAS OPCIONALES (mantenidos por compatibilidad)
+# ============================================================================
 
 # Importar sistema de apertura de mercados
 try:
@@ -97,6 +122,13 @@ KILL_SWITCH = os.getenv('KILL_SWITCH', '0') == '1'
 AUTO_EXECUTE_SIGNALS = os.getenv('AUTO_EXECUTE_SIGNALS', '0') == '1'
 AUTO_EXECUTE_CONFIDENCE = os.getenv('AUTO_EXECUTE_CONFIDENCE', 'HIGH')  # FIXED: HIGH instead of LOW
 
+# ============================================================================
+# ESTADO GLOBAL CONSOLIDADO
+# ============================================================================
+
+# Usar BotState consolidado del core
+state = BotState()
+
 # Configurar loggers específicos
 mt5_logger = logging.getLogger('mt5_client')
 mt5_logger.setLevel(logging.ERROR)  # Solo errores de MT5
@@ -104,144 +136,12 @@ mt5_logger.setLevel(logging.ERROR)  # Solo errores de MT5
 signals_logger = logging.getLogger('signals')
 signals_logger.setLevel(logging.INFO)  # Mantener info de señales
 
-# Logger personalizado para eventos importantes
-def log_event(message: str, level: str = "INFO", component: str = "BOT"):
-    """
-    Logger personalizado para eventos importantes del bot.
-    Ahora que capturamos toda la salida, solo necesitamos hacer print()
-    """
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    
-    # Formato para consola (que se capturará automáticamente en el archivo)
-    console_msg = f"[{timestamp}] 🤖 {component}: {message}"
-    
-    # Solo hacer print - el sistema TeeOutput se encarga del resto
-    print(console_msg)
-    
-    # También usar el logger estándar para mantener compatibilidad
-    if level.upper() == "ERROR":
-        logger.error(f"{component}: {message}")
-    elif level.upper() == "WARNING":
-        logger.warning(f"{component}: {message}")
-    else:
-        logger.info(f"{component}: {message}")
-# ======================
-# LOGGING SYSTEM INTELIGENTE INTEGRADO
-# ======================
-
-from collections import defaultdict
-import time
-
-class IntelligentBotLogger:
-    """Sistema de logging inteligente integrado en bot.py"""
-    
-    def __init__(self, dump_interval_minutes: int = 15):
-        self.dump_interval = dump_interval_minutes * 60
-        self.last_dump = time.time()
-        
-        # Contadores internos
-        self.stats = defaultdict(int)
-        self.rejection_reasons = defaultdict(int)
-        self.failed_rules = defaultdict(int)
-        self.symbol_activity = defaultdict(int)
-        
-        # Buffer de eventos recientes
-        self.recent_events = []
-        self.max_recent_events = 50
-    
-    def log_signal_evaluation(self, symbol: str, strategy: str, shown: bool, 
-                            confidence: str = "MEDIUM", score: float = 0.0,
-                            rejection_reason: str = None):
-        """Registra evaluación de señal sin logging de texto"""
-        self.stats['signals_evaluated'] += 1
-        self.symbol_activity[symbol] += 1
-        
-        if shown:
-            self.stats['signals_shown'] += 1
-        else:
-            self.stats['signals_rejected'] += 1
-            if rejection_reason:
-                self.rejection_reasons[rejection_reason] += 1
-        
-        # Verificar si es hora de volcar estadísticas
-        if time.time() - self.last_dump > self.dump_interval:
-            self._dump_periodic_stats()
-    
-    def log_important_event(self, message: str, level: str = "INFO", component: str = "BOT"):
-        """Log para eventos importantes (estos SÍ aparecen en texto)"""
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        
-        emoji_map = {
-            'SIGNAL_HIGH': '🎯',
-            'SIGNAL_EXECUTED': '✅', 
-            'ERROR': '❌',
-            'WARNING': '⚠️',
-            'COOLDOWN': '🔄',
-            'SYSTEM': '🤖',
-            'AUTOSIGNAL': '🔍'
-        }
-        
-        emoji = emoji_map.get(component, '📝')
-        console_msg = f"[{timestamp}] {emoji} {component}: {message}"
-        
-        print(console_msg)
-        
-        # También usar logger estándar
-        if level.upper() == "ERROR":
-            logger.error(f"{component}: {message}")
-        elif level.upper() == "WARNING":
-            logger.warning(f"{component}: {message}")
-        else:
-            logger.info(f"{component}: {message}")
-    
-    def _dump_periodic_stats(self):
-        """Volcado periódico de estadísticas agregadas"""
-        duration = (time.time() - self.last_dump) / 60
-        
-        if self.stats['signals_evaluated'] > 0:
-            show_rate = (self.stats['signals_shown'] / self.stats['signals_evaluated']) * 100
-            self.log_important_event(
-                f"📊 RESUMEN {duration:.0f}min: {self.stats['signals_evaluated']} evaluadas, "
-                f"{self.stats['signals_shown']} mostradas ({show_rate:.1f}%), "
-                f"{self.stats['signals_rejected']} rechazadas",
-                "INFO", "SYSTEM"
-            )
-            
-            # Top 3 razones de rechazo
-            if self.rejection_reasons:
-                top_rejections = sorted(self.rejection_reasons.items(), key=lambda x: x[1], reverse=True)[:3]
-                rejection_summary = ", ".join([f"{reason}({count})" for reason, count in top_rejections])
-                self.log_important_event(f"Top rechazos: {rejection_summary}", "INFO", "SYSTEM")
-            
-            # Actividad por símbolo
-            if self.symbol_activity:
-                symbol_summary = ", ".join([f"{symbol}({count})" for symbol, count in self.symbol_activity.items()])
-                self.log_important_event(f"Actividad: {symbol_summary}", "INFO", "SYSTEM")
-        
-        # Reset contadores
-        self.stats.clear()
-        self.rejection_reasons.clear()
-        self.failed_rules.clear()
-        self.symbol_activity.clear()
-        self.last_dump = time.time()
-
-# Instancia global del logger inteligente
-intelligent_bot_logger = IntelligentBotLogger(dump_interval_minutes=15)
-
 
 # ======================
 # FUNCIONES DE PERÍODO (12 HORAS)
 # ======================
 
-def get_current_period_start() -> datetime:
-    """Obtiene el inicio del período actual (00:00 o 12:00 UTC)"""
-    now = datetime.now(timezone.utc)
-    if now.hour < 12:
-        # Período 00:00-12:00
-        return now.replace(hour=0, minute=0, second=0, microsecond=0)
-    else:
-        # Período 12:00-24:00
-        return now.replace(hour=12, minute=0, second=0, microsecond=0)
+# get_current_period_start ya está importado desde core
 
 def is_new_period() -> bool:
     """Verifica si estamos en un nuevo período de 12 horas"""
@@ -320,8 +220,9 @@ def log_discord_command(func):
 # LOGGING SYSTEM
 # ======================
 
-# Usar el logger inteligente integrado
-bot_logger = intelligent_bot_logger
+# Usar el logger inteligente consolidado de services
+from services.logging import get_intelligent_logger
+bot_logger = get_intelligent_logger()
 
 # ensure we also write a simple log file for quicker debugging
 def ensure_log_file(log_path: str | None = None, clear_on_start: bool = True):
@@ -422,17 +323,8 @@ from typing import Dict, Any
 # Global variables for session tracking
 bot_start_time = None
 
-
-@dataclass
-class BotState:
-    pending_signals: Dict[int, dict] = field(default_factory=dict)
-    trades_today: int = 0
-    trades_current_period: int = 0  # Trades en el período actual (12h)
-    current_period_start: datetime = field(default_factory=lambda: get_current_period_start())
-    mt5_credentials: Dict[str, Any] = field(default_factory=dict)
-    autosignals: bool = os.getenv('AUTOSIGNALS', '0') == '1'
-    last_auto_sent: Dict[str, Any] = field(default_factory=dict)
-
+# Usar BotState del core system
+from core import BotState
 
 state = BotState()
 
@@ -480,8 +372,9 @@ def init_risk_managers():
     """Inicializa los gestores de riesgo después de cargar la configuración"""
     global risk_manager, advanced_filter
     try:
-        risk_manager = create_risk_manager()
-        advanced_filter = create_consolidated_filter()
+        from core import get_risk_manager, get_filters_system
+        risk_manager = get_risk_manager()
+        advanced_filter = get_filters_system()
         logger.info("Gestores de riesgo inicializados correctamente")
     except Exception as e:
         logger.error(f"Error inicializando gestores de riesgo: {e}")
@@ -669,8 +562,12 @@ def _detect_signal_wrapper(df, symbol: str | None = None):
                 # Asegurar que la señal tenga el símbolo correcto
                 fallback_sig['symbol'] = sym
                 
-                # 2. Calcular confianza para señal fallback
-                confidence, confidence_score, confidence_details = confidence_system.calculate_confidence(fallback_sig, fallback_df, sym)
+                # 2. Calcular confianza para señal fallback usando core system
+                from core import scoring_system
+                scoring_result = scoring_system.evaluate_signal(fallback_sig, fallback_df, sym)
+                confidence = scoring_result.confidence_level
+                confidence_score = scoring_result.final_score
+                confidence_details = scoring_result.details
                 
                 # 3. Actualizar la señal con información de confianza
                 fallback_sig['confidence'] = confidence
@@ -686,8 +583,8 @@ def _detect_signal_wrapper(df, symbol: str | None = None):
                     'confidence': confidence,
                     'confidence_score': confidence_score,
                     'confidence_details': confidence_details,
-                    'should_show': confidence_system.should_show_signal(confidence),
-                    'can_auto_execute': confidence_system.should_auto_execute(confidence, AUTO_EXECUTE_SIGNALS)
+                    'should_show': scoring_result.should_show,
+                    'can_auto_execute': scoring_result.should_execute
                 }
                 
                 return fallback_sig, fallback_df, risk_info
@@ -703,8 +600,12 @@ def _detect_signal_wrapper(df, symbol: str | None = None):
             logger.error(f"Signal is not a valid dictionary: {type(sig)} - {sig}")
             return None, df, {'approved': False, 'reason': f'Invalid signal type: {type(sig)}'}
         
-        # 2. Calcular confianza para señal principal
-        confidence, confidence_score, confidence_details = confidence_system.calculate_confidence(sig, df2, sym)
+        # 2. Calcular confianza para señal principal usando core system
+        from core import scoring_system
+        scoring_result = scoring_system.evaluate_signal(sig, df2, sym)
+        confidence = scoring_result.confidence_level
+        confidence_score = scoring_result.final_score
+        confidence_details = scoring_result.details
         
         # 3. Actualizar la señal con información de confianza
         sig['confidence'] = confidence
@@ -716,8 +617,8 @@ def _detect_signal_wrapper(df, symbol: str | None = None):
             'confidence': confidence,
             'confidence_score': confidence_score,
             'confidence_details': confidence_details,
-            'should_show': confidence_system.should_show_signal(confidence),
-            'can_auto_execute': confidence_system.should_auto_execute(confidence, AUTO_EXECUTE_SIGNALS)
+            'should_show': scoring_result.should_show,
+            'can_auto_execute': scoring_result.should_execute
         })
         
         return sig, df2, risk_info
@@ -1367,7 +1268,7 @@ async def _auto_signal_loop():
             if state.autosignals and not KILL_SWITCH:
                 scan_count += 1
                 if scan_count % 10 == 1:  # Log cada 10 escaneos (cada ~3 minutos)
-                    intelligent_bot_logger.log_important_event(
+                    log_event(
                         f"Checking {len(AUTOSIGNAL_SYMBOLS)} pairs...", "INFO", "AUTOSIGNAL"
                     )
                 
@@ -1415,11 +1316,12 @@ async def _auto_signal_loop():
                                     log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: Límite de período alcanzado ({state.trades_current_period}/{MAX_TRADES_PER_PERIOD}) - Período: {period_status['current_period']}")
                                     continue
                                 
-                                # 2. Verificar duplicados usando el nuevo sistema MEJORADO
-                                is_duplicate, duplicate_reason = duplicate_filter.is_duplicate(sig, sym)
+                                # 2. Verificar duplicados usando el sistema consolidado
+                                from core import filters_system
+                                is_duplicate, duplicate_reason = filters_system.is_duplicate(sig, sym)
                                 if is_duplicate:
                                     # Usar logging inteligente - no loguear cada rechazo individual
-                                    intelligent_bot_logger.log_signal_evaluation(
+                                    log_signal_evaluation(
                                         sym, strat, shown=False, confidence=sig.get('confidence', 'MEDIUM'),
                                         score=sig.get('score', 0.0), rejection_reason=f"Duplicate: {duplicate_reason}"
                                     )
@@ -1441,7 +1343,7 @@ async def _auto_signal_loop():
                                 # 🧩 FILTRO ESPECIAL XAUUSD: Aún más estricto
                                 if sym == 'XAUUSD' and confidence in ['LOW', 'MEDIUM']:
                                     # Usar logging inteligente - no loguear cada rechazo individual
-                                    intelligent_bot_logger.log_signal_evaluation(
+                                    log_signal_evaluation(
                                         sym, strat, shown=False, confidence=confidence,
                                         score=sig.get('score', 0.0), rejection_reason="XAUUSD quality filter"
                                     )
@@ -1472,13 +1374,13 @@ async def _auto_signal_loop():
                                         logger.error(f"Error añadiendo señal XAUUSD filtrada al dashboard: {e}")
                                     
                                     # Registrar para backtest pero no mostrar
-                                    duplicate_filter.register_signal(sig, sym, confidence)
+                                    filters_system.register_signal(sig, sym, confidence)
                                     continue
                                 
                                 # Filtro general de confianza para otros símbolos
                                 if not should_show:
                                     # Usar logging inteligente - no loguear cada rechazo individual
-                                    intelligent_bot_logger.log_signal_evaluation(
+                                    log_signal_evaluation(
                                         sym, strat, shown=False, confidence=confidence,
                                         score=sig.get('score', 0.0), rejection_reason="Confidence filter"
                                     )
@@ -1509,13 +1411,13 @@ async def _auto_signal_loop():
                                         logger.error(f"Error añadiendo señal filtrada al dashboard: {e}")
                                     
                                     # Registrar para backtest pero no mostrar
-                                    duplicate_filter.register_signal(sig, sym, confidence)
+                                    filters_system.register_signal(sig, sym, confidence)
                                     continue
                                 
                                 signals_found += 1
                                 
                                 # 5. Registrar señal para evitar duplicados futuros
-                                duplicate_filter.register_signal(sig, sym, confidence)
+                                filters_system.register_signal(sig, sym, confidence)
                                 
                                 # 6. Crear ID de señal y almacenar
                                 sid = max(state.pending_signals.keys(), default=0) + 1
@@ -1639,7 +1541,7 @@ async def _auto_signal_loop():
                     # Log resumen cada cierto tiempo con métricas MEJORADAS
                     if scan_count % 30 == 0:  # Cada 30 escaneos (~45 minutos)
                         # Obtener estadísticas del filtro de duplicados MEJORADAS
-                        filter_stats = duplicate_filter.get_stats()
+                        filter_stats = filters_system.get_stats()
                         
                         # Calcular tiempo de sesión
                         session_time = (datetime.now(timezone.utc) - bot_start_time).total_seconds() / 3600
@@ -4276,7 +4178,7 @@ async def slash_cooldown_status(interaction: discord.Interaction):
     
     try:
         # Obtener estadísticas del filtro de duplicados
-        filter_stats = duplicate_filter.get_stats()
+        filter_stats = filters_system.get_stats()
         
         embed = discord.Embed(
             title="🔄 Estado de Cooldowns y Filtros",

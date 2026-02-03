@@ -1,0 +1,12 @@
+{
+  "metrics": {
+    "signals_today": 0,
+    "signals_shown": 0,
+    "signals_executed": 0,
+    "signals_rejected": 0,
+    "symbol_activity": {},
+    "symbol_performance": {},
+    "confidence_distribution": {}
+  },
+  "last_save": "2026-02-03T17:42:10.006032+00:00"
+}

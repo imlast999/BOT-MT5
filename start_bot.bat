@@ -83,15 +83,6 @@ echo    ✅ Servidor web Flask integrado para dashboard
 echo    🌐 Dashboard disponible en http://localhost:5000
 echo.
 
-REM Preguntar si continuar
-echo ¿Iniciar el bot con sistema integrado? (S/N)
-set /p CONTINUE=
-if /i not "%CONTINUE%"=="S" if /i not "%CONTINUE%"=="Y" (
-    echo Operación cancelada
-    pause
-    exit /b 0
-)
-
 echo.
 echo 🚀 INICIANDO BOT MT5 CON SISTEMA INTEGRADO...
 echo ========================================
