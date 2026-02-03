@@ -10,3 +10,4 @@ asyncio
 aiohttp>=3.8.0
 audioop-lts>=0.2.2
 plotly>=5.0.0
+flask>=2.0.0

@@ -17,6 +17,13 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from math import floor
 
+# Configurar logging ANTES de los imports opcionales
+logging.basicConfig(
+    level=logging.WARNING,  # Cambiar a WARNING para reducir ruido
+    format='{"time":"%(asctime)s","level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}'
+)
+logger = logging.getLogger(__name__)
+
 # local modules
 from mt5_client import initialize as mt5_initialize, get_candles, shutdown as mt5_shutdown, login as mt5_login, place_order
 from signals import detect_signal, detect_signal_advanced
@@ -27,8 +34,7 @@ from trading_filters import create_consolidated_filter, should_execute_signal
 from backtest_tracker import backtest_tracker
 import MetaTrader5 as mt5
 from position_manager import list_positions, close_position
-from live_dashboard import start_live_dashboard, stop_live_dashboard, update_dashboard_stats
-from live_dashboard_fixed import start_enhanced_dashboard, stop_enhanced_dashboard, add_signal_to_enhanced_dashboard
+from live_dashboard import start_enhanced_dashboard, stop_enhanced_dashboard, add_signal_to_enhanced_dashboard, update_dashboard_stats
 
 # Nuevos sistemas
 from confidence_system import confidence_system
@@ -54,6 +60,24 @@ except ImportError as e:
     trailing_manager = None
     TRAILING_STOPS_AVAILABLE = False
 
+# Importar sistema de reconexión
+try:
+    from reconnection_system import reconnection_system
+    RECONNECTION_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Sistema de reconexión no disponible: {e}")
+    reconnection_system = None
+    RECONNECTION_AVAILABLE = False
+
+# Importar sistema de resumen de sesión
+try:
+    from session_summary import session_summary
+    SESSION_SUMMARY_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Sistema de resumen de sesión no disponible: {e}")
+    session_summary = None
+    SESSION_SUMMARY_AVAILABLE = False
+
 # ======================
 # CONFIGURACIÓN
 # ======================
@@ -71,14 +95,7 @@ KILL_SWITCH = os.getenv('KILL_SWITCH', '0') == '1'
 
 # auto-execution settings
 AUTO_EXECUTE_SIGNALS = os.getenv('AUTO_EXECUTE_SIGNALS', '0') == '1'
-AUTO_EXECUTE_CONFIDENCE = os.getenv('AUTO_EXECUTE_CONFIDENCE', 'MEDIUM_HIGH')
-
-# structured-ish logging for easier parsing
-logging.basicConfig(
-    level=logging.WARNING,  # Cambiar a WARNING para reducir ruido
-    format='{"time":"%(asctime)s","level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}'
-)
-logger = logging.getLogger(__name__)
+AUTO_EXECUTE_CONFIDENCE = os.getenv('AUTO_EXECUTE_CONFIDENCE', 'HIGH')  # FIXED: HIGH instead of LOW
 
 # Configurar loggers específicos
 mt5_logger = logging.getLogger('mt5_client')
@@ -108,33 +125,108 @@ def log_event(message: str, level: str = "INFO", component: str = "BOT"):
         logger.warning(f"{component}: {message}")
     else:
         logger.info(f"{component}: {message}")
-class BotEventLogger:
-    """Logger personalizado para eventos importantes del bot"""
+# ======================
+# LOGGING SYSTEM INTELIGENTE INTEGRADO
+# ======================
+
+from collections import defaultdict
+import time
+
+class IntelligentBotLogger:
+    """Sistema de logging inteligente integrado en bot.py"""
     
-    @staticmethod
-    def command_used(user_id: int, command: str, success: bool = True):
-        status = "✅ SUCCESS" if success else "❌ ERROR"
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎮 COMMAND: /{command} | User: {user_id} | {status}")
+    def __init__(self, dump_interval_minutes: int = 15):
+        self.dump_interval = dump_interval_minutes * 60
+        self.last_dump = time.time()
+        
+        # Contadores internos
+        self.stats = defaultdict(int)
+        self.rejection_reasons = defaultdict(int)
+        self.failed_rules = defaultdict(int)
+        self.symbol_activity = defaultdict(int)
+        
+        # Buffer de eventos recientes
+        self.recent_events = []
+        self.max_recent_events = 50
     
-    @staticmethod
-    def signal_generated(symbol: str, signal_type: str, confidence: str = "MEDIUM"):
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎯 NEW SIGNAL: {symbol} {signal_type} | Confidence: {confidence}")
+    def log_signal_evaluation(self, symbol: str, strategy: str, shown: bool, 
+                            confidence: str = "MEDIUM", score: float = 0.0,
+                            rejection_reason: str = None):
+        """Registra evaluación de señal sin logging de texto"""
+        self.stats['signals_evaluated'] += 1
+        self.symbol_activity[symbol] += 1
+        
+        if shown:
+            self.stats['signals_shown'] += 1
+        else:
+            self.stats['signals_rejected'] += 1
+            if rejection_reason:
+                self.rejection_reasons[rejection_reason] += 1
+        
+        # Verificar si es hora de volcar estadísticas
+        if time.time() - self.last_dump > self.dump_interval:
+            self._dump_periodic_stats()
     
-    @staticmethod
-    def signal_rejected(symbol: str, reason: str):
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ SIGNAL REJECTED: {symbol} | Reason: {reason[:50]}")
+    def log_important_event(self, message: str, level: str = "INFO", component: str = "BOT"):
+        """Log para eventos importantes (estos SÍ aparecen en texto)"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        
+        emoji_map = {
+            'SIGNAL_HIGH': '🎯',
+            'SIGNAL_EXECUTED': '✅', 
+            'ERROR': '❌',
+            'WARNING': '⚠️',
+            'COOLDOWN': '🔄',
+            'SYSTEM': '🤖',
+            'AUTOSIGNAL': '🔍'
+        }
+        
+        emoji = emoji_map.get(component, '📝')
+        console_msg = f"[{timestamp}] {emoji} {component}: {message}"
+        
+        print(console_msg)
+        
+        # También usar logger estándar
+        if level.upper() == "ERROR":
+            logger.error(f"{component}: {message}")
+        elif level.upper() == "WARNING":
+            logger.warning(f"{component}: {message}")
+        else:
+            logger.info(f"{component}: {message}")
     
-    @staticmethod
-    def autosignal_scan():
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 AUTOSIGNAL SCAN: Checking {len(AUTOSIGNAL_SYMBOLS)} pairs...")
-    
-    @staticmethod
-    def market_opening_alert(market: str, alert_type: str):
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 MARKET ALERT: {market} {alert_type}")
-    
-    @staticmethod
-    def bot_status(message: str):
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 BOT: {message}")
+    def _dump_periodic_stats(self):
+        """Volcado periódico de estadísticas agregadas"""
+        duration = (time.time() - self.last_dump) / 60
+        
+        if self.stats['signals_evaluated'] > 0:
+            show_rate = (self.stats['signals_shown'] / self.stats['signals_evaluated']) * 100
+            self.log_important_event(
+                f"📊 RESUMEN {duration:.0f}min: {self.stats['signals_evaluated']} evaluadas, "
+                f"{self.stats['signals_shown']} mostradas ({show_rate:.1f}%), "
+                f"{self.stats['signals_rejected']} rechazadas",
+                "INFO", "SYSTEM"
+            )
+            
+            # Top 3 razones de rechazo
+            if self.rejection_reasons:
+                top_rejections = sorted(self.rejection_reasons.items(), key=lambda x: x[1], reverse=True)[:3]
+                rejection_summary = ", ".join([f"{reason}({count})" for reason, count in top_rejections])
+                self.log_important_event(f"Top rechazos: {rejection_summary}", "INFO", "SYSTEM")
+            
+            # Actividad por símbolo
+            if self.symbol_activity:
+                symbol_summary = ", ".join([f"{symbol}({count})" for symbol, count in self.symbol_activity.items()])
+                self.log_important_event(f"Actividad: {symbol_summary}", "INFO", "SYSTEM")
+        
+        # Reset contadores
+        self.stats.clear()
+        self.rejection_reasons.clear()
+        self.failed_rules.clear()
+        self.symbol_activity.clear()
+        self.last_dump = time.time()
+
+# Instancia global del logger inteligente
+intelligent_bot_logger = IntelligentBotLogger(dump_interval_minutes=15)
 
 
 # ======================
@@ -228,7 +320,8 @@ def log_discord_command(func):
 # LOGGING SYSTEM
 # ======================
 
-bot_logger = BotEventLogger()
+# Usar el logger inteligente integrado
+bot_logger = intelligent_bot_logger
 
 # ensure we also write a simple log file for quicker debugging
 def ensure_log_file(log_path: str | None = None, clear_on_start: bool = True):
@@ -325,6 +418,9 @@ GUILD_ID = os.getenv('GUILD_ID')
 # runtime state encapsulated in a single object to avoid globals
 from dataclasses import dataclass, field
 from typing import Dict, Any
+
+# Global variables for session tracking
+bot_start_time = None
 
 
 @dataclass
@@ -729,6 +825,9 @@ if loaded:
 
 @bot.event
 async def on_ready():
+    global bot_start_time
+    bot_start_time = datetime.now(timezone.utc)  # Track bot start time for session metrics
+    
     log_event(f"Conectado como {bot.user}")
     
     # Inicializar gestores de riesgo
@@ -784,6 +883,32 @@ async def on_ready():
         log_event(f"Error iniciando dashboard inteligente: {e}", "ERROR")
         logger.exception("Failed to start enhanced dashboard")
     
+    # start reconnection system
+    if RECONNECTION_AVAILABLE:
+        try:
+            # Configurar callbacks
+            async def on_mt5_reconnect():
+                log_event("🔄 MT5 reconectado exitosamente")
+            
+            async def on_discord_reconnect():
+                log_event("🔄 Discord reconectado exitosamente")
+            
+            async def on_connection_lost(service):
+                log_event(f"⚠️ Conexión perdida: {service}", "WARNING")
+            
+            reconnection_system.set_callbacks(
+                mt5_reconnect=on_mt5_reconnect,
+                discord_reconnect=on_discord_reconnect,
+                connection_lost=on_connection_lost
+            )
+            
+            # Iniciar watchdog
+            bot.loop.create_task(reconnection_system.watchdog_loop(bot, state.mt5_credentials))
+            log_event("Sistema de reconexión automática iniciado")
+        except Exception as e:
+            log_event(f"Error iniciando sistema de reconexión: {e}", "ERROR")
+            logger.exception("Failed to start reconnection system")
+    
     # Print helpful invite URL for adding the bot with application commands scope
     try:
         app_id = bot.application_id or bot.user.id
@@ -810,6 +935,16 @@ async def on_ready():
         log_event("Módulo market opening: DISPONIBLE")
     else:
         log_event("Módulo market opening: NO DISPONIBLE", "WARNING")
+    
+    if RECONNECTION_AVAILABLE:
+        log_event("Módulo reconexión: DISPONIBLE")
+    else:
+        log_event("Módulo reconexión: NO DISPONIBLE", "WARNING")
+    
+    if SESSION_SUMMARY_AVAILABLE:
+        log_event("Módulo resumen de sesión: DISPONIBLE")
+    else:
+        log_event("Módulo resumen de sesión: NO DISPONIBLE", "WARNING")
     
     log_event("Bot completamente inicializado y listo para operar")
     
@@ -1232,7 +1367,9 @@ async def _auto_signal_loop():
             if state.autosignals and not KILL_SWITCH:
                 scan_count += 1
                 if scan_count % 10 == 1:  # Log cada 10 escaneos (cada ~3 minutos)
-                    log_event(f"🔍 AUTOSIGNAL SCAN: Checking {len(AUTOSIGNAL_SYMBOLS)} pairs...")
+                    intelligent_bot_logger.log_important_event(
+                        f"Checking {len(AUTOSIGNAL_SYMBOLS)} pairs...", "INFO", "AUTOSIGNAL"
+                    )
                 
                 ch = await _find_signals_channel()
                 if ch is None:
@@ -1278,10 +1415,19 @@ async def _auto_signal_loop():
                                     log_event(f"❌ SIGNAL REJECTED: {sym} | Reason: Límite de período alcanzado ({state.trades_current_period}/{MAX_TRADES_PER_PERIOD}) - Período: {period_status['current_period']}")
                                     continue
                                 
-                                # 2. Verificar duplicados usando el nuevo sistema
+                                # 2. Verificar duplicados usando el nuevo sistema MEJORADO
                                 is_duplicate, duplicate_reason = duplicate_filter.is_duplicate(sig, sym)
                                 if is_duplicate:
-                                    log_event(f"🔄 SIGNAL DUPLICATE: {sym} | {duplicate_reason}")
+                                    # Usar logging inteligente - no loguear cada rechazo individual
+                                    intelligent_bot_logger.log_signal_evaluation(
+                                        sym, strat, shown=False, confidence=sig.get('confidence', 'MEDIUM'),
+                                        score=sig.get('score', 0.0), rejection_reason=f"Duplicate: {duplicate_reason}"
+                                    )
+                                    
+                                    # Actualizar estadísticas de sesión para señales bloqueadas
+                                    if SESSION_SUMMARY_AVAILABLE:
+                                        session_summary.update_signal_stats(sym, sig.get('confidence', 'MEDIUM'), shown=False, executed=False, blocked=True)
+                                    
                                     continue
                                 
                                 # 3. Obtener información de confianza
@@ -1294,7 +1440,15 @@ async def _auto_signal_loop():
                                 # 4. 👁 FILTRO DE VISUALIZACIÓN: Solo mostrar MEDIUM-HIGH y HIGH
                                 # 🧩 FILTRO ESPECIAL XAUUSD: Aún más estricto
                                 if sym == 'XAUUSD' and confidence in ['LOW', 'MEDIUM']:
-                                    log_event(f"📝 SIGNAL LOGGED: {sym} [{confidence}] {sig.get('type')} @ {sig.get('entry'):.5f} | Not shown (XAUUSD quality filter)")
+                                    # Usar logging inteligente - no loguear cada rechazo individual
+                                    intelligent_bot_logger.log_signal_evaluation(
+                                        sym, strat, shown=False, confidence=confidence,
+                                        score=sig.get('score', 0.0), rejection_reason="XAUUSD quality filter"
+                                    )
+                                    
+                                    # Actualizar estadísticas de sesión para señales filtradas
+                                    if SESSION_SUMMARY_AVAILABLE:
+                                        session_summary.update_signal_stats(sym, confidence, shown=False, executed=False, filtered=True)
                                     
                                     # Añadir señal al dashboard inteligente (aunque no se muestre)
                                     try:
@@ -1323,7 +1477,15 @@ async def _auto_signal_loop():
                                 
                                 # Filtro general de confianza para otros símbolos
                                 if not should_show:
-                                    log_event(f"📝 SIGNAL LOGGED: {sym} [{confidence}] {sig.get('type')} @ {sig.get('entry'):.5f} | Not shown (confidence filter)")
+                                    # Usar logging inteligente - no loguear cada rechazo individual
+                                    intelligent_bot_logger.log_signal_evaluation(
+                                        sym, strat, shown=False, confidence=confidence,
+                                        score=sig.get('score', 0.0), rejection_reason="Confidence filter"
+                                    )
+                                    
+                                    # Actualizar estadísticas de sesión para señales filtradas
+                                    if SESSION_SUMMARY_AVAILABLE:
+                                        session_summary.update_signal_stats(sym, confidence, shown=False, executed=False, filtered=True)
                                     
                                     # Añadir señal al dashboard inteligente (aunque no se muestre)
                                     try:
@@ -1392,6 +1554,10 @@ async def _auto_signal_loop():
                                     strategy_label = strategy_used
                                 
                                 log_event(f"✅ SIGNAL GENERATED: {sym} [{strategy_label}] {sig.get('type')} @ {sig.get('entry'):.5f} | Confidence: {confidence} ({confidence_score}/3)")
+                                
+                                # Actualizar estadísticas de sesión
+                                if SESSION_SUMMARY_AVAILABLE:
+                                    session_summary.update_signal_stats(sym, confidence, shown=should_show, executed=can_auto_execute)
                                 
                                 # Añadir señal al dashboard inteligente
                                 try:
@@ -1470,9 +1636,48 @@ async def _auto_signal_loop():
                             log_event(f"❌ ERROR scanning {sym}", "ERROR")
                             logger.exception('Error scanning symbol %s', sym)
                     
-                    # Log resumen cada cierto tiempo
-                    if scan_count % 30 == 0:  # Cada 30 escaneos (~10 minutos)
-                        log_event(f"Escaneo #{scan_count}: {signals_found} señales encontradas")
+                    # Log resumen cada cierto tiempo con métricas MEJORADAS
+                    if scan_count % 30 == 0:  # Cada 30 escaneos (~45 minutos)
+                        # Obtener estadísticas del filtro de duplicados MEJORADAS
+                        filter_stats = duplicate_filter.get_stats()
+                        
+                        # Calcular tiempo de sesión
+                        session_time = (datetime.now(timezone.utc) - bot_start_time).total_seconds() / 3600
+                        
+                        log_event(f"📊 SESIÓN #{scan_count}: {signals_found} señales | {session_time:.1f}h activo")
+                        
+                        # Log cooldowns generales
+                        cooldowns = filter_stats.get('cooldowns', {})
+                        log_event(f"🔄 Cooldowns: EURUSD={cooldowns.get('EURUSD', 600)}s, XAUUSD={cooldowns.get('XAUUSD', 1200)}s, BTCEUR={cooldowns.get('BTCEUR', 600)}s")
+                        
+                        # Log estado detallado de cada símbolo
+                        for symbol in AUTOSIGNAL_SYMBOLS:
+                            symbol_key = f'{symbol}_last_signal'
+                            if symbol_key in filter_stats:
+                                symbol_data = filter_stats[symbol_key]
+                                if isinstance(symbol_data, dict):
+                                    # Nuevo formato detallado
+                                    time_since = symbol_data.get('time_since', 'never')
+                                    confidence = symbol_data.get('confidence', 'unknown')
+                                    direction = symbol_data.get('direction', 'unknown')
+                                    zone = symbol_data.get('zone', 'unknown')
+                                    cooldown_remaining = symbol_data.get('cooldown_remaining', '0s')
+                                    
+                                    log_event(f"📈 {symbol}: {time_since} ({confidence}) - {direction} in {zone} - Cooldown: {cooldown_remaining}")
+                                else:
+                                    # Formato legacy
+                                    log_event(f"📈 {symbol}: {symbol_data}")
+                        
+                        # Log estadísticas del sistema de cooldown inteligente si está disponible
+                        if filter_stats.get('cooldown_manager_available', False):
+                            cooldown_stats = filter_stats.get('cooldown_manager_stats', {})
+                            symbols_tracked = cooldown_stats.get('symbols_tracked', 0)
+                            zones_tracked = cooldown_stats.get('zones_tracked', 0)
+                            log_event(f"🧠 COOLDOWN MANAGER: {symbols_tracked} symbols, {zones_tracked} zones tracked")
+                        
+                        # Generar resumen de sesión cada 2 horas
+                        if SESSION_SUMMARY_AVAILABLE and scan_count % 240 == 0:  # Cada 240 escaneos (~6 horas)
+                            session_summary.log_session_summary()
             
             await asyncio.sleep(AUTOSIGNAL_INTERVAL)
         except Exception:
@@ -4059,6 +4264,129 @@ async def slash_backtest_summary(interaction: discord.Interaction):
         
     except Exception as e:
         await interaction.followup.send(f"❌ Error obteniendo resumen de backtest: {e}")
+
+
+@bot.tree.command(name="cooldown_status")
+@log_discord_command
+async def slash_cooldown_status(interaction: discord.Interaction):
+    """Muestra el estado actual de cooldowns y filtros de duplicados (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+    
+    try:
+        # Obtener estadísticas del filtro de duplicados
+        filter_stats = duplicate_filter.get_stats()
+        
+        embed = discord.Embed(
+            title="🔄 Estado de Cooldowns y Filtros",
+            color=0x3498db,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Información general
+        embed.add_field(
+            name="📊 Información General",
+            value=f"• Símbolos rastreados: {filter_stats.get('symbols_tracked', 0)}\n"
+                  f"• Sistema inteligente: {'✅ Activo' if filter_stats.get('cooldown_manager_available', False) else '❌ No disponible'}\n"
+                  f"• Intervalo base: {filter_stats.get('base_interval', 90)}s",
+            inline=False
+        )
+        
+        # Cooldowns por símbolo
+        cooldowns = filter_stats.get('cooldowns', {})
+        cooldown_text = ""
+        for symbol, cooldown in cooldowns.items():
+            cooldown_text += f"• {symbol}: {cooldown}s ({cooldown//60}min)\n"
+        
+        if cooldown_text:
+            embed.add_field(
+                name="⏱️ Cooldowns por Símbolo",
+                value=cooldown_text,
+                inline=True
+            )
+        
+        # Cooldowns por zona/dirección
+        zone_cooldowns = filter_stats.get('zone_cooldowns', {})
+        if zone_cooldowns:
+            zone_text = ""
+            for symbol, directions in zone_cooldowns.items():
+                zone_text += f"**{symbol}:**\n"
+                for direction, cooldown in directions.items():
+                    zone_text += f"  • {direction}: {cooldown}s ({cooldown//60}min)\n"
+            
+            embed.add_field(
+                name="🎯 Cooldowns por Zona/Dirección",
+                value=zone_text[:1024],  # Limitar a 1024 caracteres
+                inline=True
+            )
+        
+        # Estado actual de cada símbolo
+        symbol_status = ""
+        for symbol in ['EURUSD', 'XAUUSD', 'BTCEUR']:
+            symbol_key = f'{symbol}_last_signal'
+            if symbol_key in filter_stats:
+                symbol_data = filter_stats[symbol_key]
+                if isinstance(symbol_data, dict):
+                    time_since = symbol_data.get('time_since', 'never')
+                    confidence = symbol_data.get('confidence', 'unknown')
+                    direction = symbol_data.get('direction', 'unknown')
+                    cooldown_remaining = symbol_data.get('cooldown_remaining', '0s')
+                    
+                    symbol_status += f"**{symbol}:**\n"
+                    symbol_status += f"  • Última: {time_since} ({confidence})\n"
+                    symbol_status += f"  • Dirección: {direction}\n"
+                    symbol_status += f"  • Cooldown restante: {cooldown_remaining}\n\n"
+                else:
+                    symbol_status += f"**{symbol}:** {symbol_data}\n\n"
+        
+        if symbol_status:
+            embed.add_field(
+                name="📈 Estado Actual por Símbolo",
+                value=symbol_status[:1024],  # Limitar a 1024 caracteres
+                inline=False
+            )
+        
+        # Estadísticas del sistema inteligente si está disponible
+        if filter_stats.get('cooldown_manager_available', False):
+            cooldown_stats = filter_stats.get('cooldown_manager_stats', {})
+            if cooldown_stats:
+                symbols_tracked = cooldown_stats.get('symbols_tracked', 0)
+                zones_tracked = cooldown_stats.get('zones_tracked', 0)
+                
+                embed.add_field(
+                    name="🧠 Sistema de Cooldown Inteligente",
+                    value=f"• Símbolos activos: {symbols_tracked}\n"
+                          f"• Zonas rastreadas: {zones_tracked}\n"
+                          f"• Estado: ✅ Operativo",
+                    inline=False
+                )
+        
+        # Tolerancias
+        tolerances = filter_stats.get('tolerances', {})
+        if tolerances:
+            tolerance_text = ""
+            for symbol, tolerance in tolerances.items():
+                if symbol == 'XAUUSD':
+                    tolerance_text += f"• {symbol}: {tolerance} puntos\n"
+                elif symbol == 'EURUSD':
+                    tolerance_text += f"• {symbol}: {tolerance*10000:.1f} pips\n"
+                else:
+                    tolerance_text += f"• {symbol}: {tolerance}\n"
+            
+            embed.add_field(
+                name="📏 Tolerancias de Precio",
+                value=tolerance_text,
+                inline=True
+            )
+        
+        embed.set_footer(text="Sistema de filtros anti-spam activo")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        logger.error(f"Error en cooldown_status: {e}")
+        await interaction.response.send_message(f"❌ Error obteniendo estado de cooldowns: {e}", ephemeral=True)
 
 
 @bot.tree.command(name="live_dashboard")

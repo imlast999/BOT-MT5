@@ -1,542 +1,195 @@
 
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Bot MT5 - Dashboard Inteligente (Sesión: 20260129_083715)</title>
-            <meta http-equiv="refresh" content="300">
-            <style>
-                * {
-                    margin: 0;
-                    padding: 0;
-                    box-sizing: border-box;
-                }
-                
-                body {
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
-                    color: #ffffff;
-                    min-height: 100vh;
-                }
-                
-                .header {
-                    background: rgba(0, 0, 0, 0.4);
-                    padding: 15px 20px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    border-bottom: 2px solid #00ff88;
-                    backdrop-filter: blur(10px);
-                }
-                
-                .header h1 {
-                    font-size: 1.8em;
-                    background: linear-gradient(45deg, #00ff88, #00ccff);
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
-                }
-                
-                .filters-section {
-                    background: rgba(255, 255, 255, 0.05);
-                    padding: 20px;
-                    display: flex;
-                    gap: 20px;
-                    align-items: center;
-                    flex-wrap: wrap;
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-                }
-                
-                .filter-group {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 5px;
-                }
-                
-                .filter-group label {
-                    font-size: 0.9em;
-                    color: rgba(255, 255, 255, 0.8);
-                    font-weight: bold;
-                }
-                
-                .filter-select {
-                    padding: 8px 12px;
-                    background: rgba(255, 255, 255, 0.1);
-                    border: 1px solid rgba(255, 255, 255, 0.2);
-                    color: white;
-                    border-radius: 5px;
-                    cursor: pointer;
-                }
-                
-                .confidence-badge {
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    font-size: 0.8em;
-                    font-weight: bold;
-                    text-transform: uppercase;
-                }
-                
-                .confidence-HIGH { background: #00ff88; color: #000; }
-                .confidence-MEDIUM-HIGH { background: #00ccff; color: #000; }
-                .confidence-MEDIUM { background: #ffaa00; color: #000; }
-                .confidence-LOW { background: #ff4444; color: #fff; }
-                
-                .stats-grid {
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                    gap: 15px;
-                    padding: 20px;
-                    max-width: 1400px;
-                    margin: 0 auto;
-                }
-                
-                .stat-card {
-                    background: rgba(255, 255, 255, 0.08);
-                    border-radius: 12px;
-                    padding: 20px;
-                    text-align: center;
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                    backdrop-filter: blur(10px);
-                    transition: transform 0.3s;
-                }
-                
-                .stat-card:hover {
-                    transform: translateY(-2px);
-                }
-                
-                .stat-card h3 {
-                    color: #00ff88;
-                    margin-bottom: 8px;
-                    font-size: 0.8em;
-                    text-transform: uppercase;
-                    letter-spacing: 1px;
-                }
-                
-                .stat-card .value {
-                    font-size: 1.8em;
-                    font-weight: bold;
-                    margin-bottom: 5px;
-                }
-                
-                .symbol-cards {
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                    gap: 20px;
-                    padding: 20px;
-                    max-width: 1400px;
-                    margin: 0 auto;
-                }
-                
-                .symbol-card {
-                    background: rgba(255, 255, 255, 0.08);
-                    border-radius: 15px;
-                    padding: 20px;
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                }
-                
-                .symbol-card h3 {
-                    color: #00ff88;
-                    margin-bottom: 15px;
-                    font-size: 1.2em;
-                    text-align: center;
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-                    padding-bottom: 10px;
-                }
-                
-                .symbol-metrics {
-                    display: grid;
-                    grid-template-columns: repeat(2, 1fr);
-                    gap: 10px;
-                    margin-bottom: 15px;
-                }
-                
-                .metric-item {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding: 5px 0;
-                    font-size: 0.9em;
-                }
-                
-                .metric-value {
-                    font-weight: bold;
-                    color: #00ccff;
-                }
-                
-                .confidence-breakdown {
-                    display: flex;
-                    gap: 5px;
-                    margin-top: 10px;
-                }
-                
-                .confidence-mini-badge {
-                    flex: 1;
-                    text-align: center;
-                    padding: 5px 2px;
-                    border-radius: 3px;
-                    font-size: 0.7em;
-                    font-weight: bold;
-                }
-                
-                .signals-table {
-                    background: rgba(255, 255, 255, 0.05);
-                    border-radius: 15px;
-                    padding: 20px;
-                    margin: 20px auto;
-                    max-width: 1400px;
-                }
-                
-                .signals-table table {
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin-top: 15px;
-                }
-                
-                .signals-table th,
-                .signals-table td {
-                    padding: 12px;
-                    text-align: left;
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-                }
-                
-                .signals-table th {
-                    background: rgba(0, 255, 136, 0.2);
-                    color: #00ff88;
-                    font-weight: bold;
-                    text-transform: uppercase;
-                    font-size: 0.9em;
-                }
-                
-                .status-executed { color: #00ff88; }
-                .status-proposed { color: #ffaa00; }
-                .status-rejected { color: #ff4444; }
-                
-                .positive { color: #00ff88; }
-                .negative { color: #ff4444; }
-                .neutral { color: #ffaa00; }
-                
-                .section-title {
-                    text-align: center;
-                    font-size: 1.5em;
-                    margin: 30px 0 20px 0;
-                    color: #00ff88;
-                    text-transform: uppercase;
-                    letter-spacing: 2px;
-                }
-                
-                .live-indicator {
-                    display: inline-block;
-                    width: 8px;
-                    height: 8px;
-                    background: #00ff88;
-                    border-radius: 50%;
-                    animation: pulse 2s infinite;
-                    margin-right: 5px;
-                }
-                
-                @keyframes pulse {
-                    0% { opacity: 1; }
-                    50% { opacity: 0.5; }
-                    100% { opacity: 1; }
-                }
-                
-                @media (max-width: 768px) {
-                    .stats-grid, .symbol-cards {
-                        grid-template-columns: 1fr;
-                    }
-                    
-                    .filters-section {
-                        flex-direction: column;
-                        align-items: stretch;
-                    }
-                    
-                    .filter-group {
-                        width: 100%;
-                    }
-                }
-            </style>
-            <script>
-                // Auto-refresh
-                let refreshCountdown = 300;
-                function updateCountdown() {
-                    const minutes = Math.floor(refreshCountdown / 60);
-                    const seconds = refreshCountdown % 60;
-                    document.getElementById('refresh-countdown').textContent = 
-                        `${minutes}:${seconds.toString().padStart(2, '0')}`;
-                    
-                    if (refreshCountdown <= 0) {
-                        location.reload();
-                    } else {
-                        refreshCountdown--;
-                    }
-                }
-                setInterval(updateCountdown, 1000);
-            </script>
-        </head>
-        <body>
-            <div class="header">
-                <div>
-                    <h1><span class="live-indicator"></span>Dashboard Inteligente MT5</h1>
-                    <div style="font-size: 0.8em; color: rgba(255, 255, 255, 0.7); margin-top: 5px;">
-                        Sesión: 20260129_083715 • Sistema de Confianza Activo
-                    </div>
-                </div>
-                <div style="text-align: right;">
-                    <div>Próxima actualización: <span id="refresh-countdown">5:00</span></div>
-                    <div style="font-size: 0.8em; margin-top: 5px;">
-                        Señales totales: 4 • HIGH: 0 • MEDIUM-HIGH: 0
-                    </div>
-                </div>
-            </div>
-            
-            <div class="filters-section">
-                <div class="filter-group">
-                    <label>📊 Símbolo:</label>
-                    <select class="filter-select">
-                        <option value="ALL">Todos</option>
-                        <option value="EURUSD">EURUSD</option>
-                        <option value="XAUUSD">XAUUSD</option>
-                        <option value="BTCEUR">BTCEUR</option>
-                    </select>
-                </div>
-                
-                <div class="filter-group">
-                    <label>🧠 Confianza:</label>
-                    <select class="filter-select">
-                        <option value="ALL">Todas</option>
-                        <option value="HIGH">HIGH</option>
-                        <option value="MEDIUM-HIGH">MEDIUM-HIGH</option>
-                        <option value="MEDIUM">MEDIUM</option>
-                        <option value="LOW">LOW</option>
-                    </select>
-                </div>
-                
-                <div class="filter-group">
-                    <label>⚡ Estado:</label>
-                    <select class="filter-select">
-                        <option value="ALL">Todos</option>
-                        <option value="EXECUTED">Ejecutadas</option>
-                        <option value="PROPOSED">Propuestas</option>
-                        <option value="REJECTED">Rechazadas</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="section-title">📊 Resumen Global de Confianza</div>
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <h3>🎯 Señales HIGH</h3>
-                    <div class="value positive">0</div>
-                    <small>Auto-ejecutables</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>⚡ Señales MEDIUM-HIGH</h3>
-                    <div class="value neutral">0</div>
-                    <small>Mostradas en Discord</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>📈 Señales MEDIUM</h3>
-                    <div class="value neutral">1</div>
-                    <small>Solo logueadas</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>📉 Señales LOW</h3>
-                    <div class="value negative">3</div>
-                    <small>Filtradas</small>
-                </div>
-            </div>
-            
-            <div class="section-title">💎 Análisis por Símbolo</div>
-            <div class="symbol-cards">
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard MT5 Bot - Sistema Inteligente</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+        .header p {
+            margin: 10px 0 0 0;
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            padding: 30px;
+            background: #f8f9fa;
+        }
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: transform 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        .stat-value {
+            font-size: 2.2em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .stat-label {
+            color: #666;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .charts-section {
+            padding: 30px;
+        }
+        .chart-container {
+            margin-bottom: 30px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .cooldown-info {
+            background: #e3f2fd;
+            padding: 20px;
+            margin: 20px 30px;
+            border-radius: 10px;
+            border-left: 5px solid #2196f3;
+        }
+        .cooldown-info h3 {
+            margin-top: 0;
+            color: #1976d2;
+        }
+        .footer {
+            background: #263238;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-active { background-color: #4caf50; }
+        .status-inactive { background-color: #f44336; }
+        .confidence-high { color: #00ff88; }
+        .confidence-medium-high { color: #00ccff; }
+        .confidence-medium { color: #ffaa00; }
+        .confidence-low { color: #ff4444; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Dashboard MT5 Bot</h1>
+            <p>Sistema Inteligente con Filtros de Confianza y Cooldowns</p>
+            <p>Sesión: 20260201_235545 | Actualizado: 11:16:20</p>
+        </div>
         
-                <div class="symbol-card">
-                    <h3>EURUSD</h3>
-                    <div class="symbol-metrics">
-                        <div class="metric-item">
-                            <span>Total Señales:</span>
-                            <span class="metric-value">0</span>
-                        </div>
-                        <div class="metric-item">
-                            <span>Win Rate:</span>
-                            <span class="metric-value negative">0.0%</span>
-                        </div>
-                        <div class="metric-item">
-                            <span>P&L:</span>
-                            <span class="metric-value negative">0.00 EUR</span>
-                        </div>
-                        <div class="metric-item">
-                            <span>Ejecución:</span>
-                            <span class="metric-value">0.0%</span>
-                        </div>
-                    </div>
-                    <div class="confidence-breakdown">
-                        <div class="confidence-mini-badge confidence-HIGH">
-                            H: 0
-                        </div>
-                        <div class="confidence-mini-badge confidence-MEDIUM-HIGH">
-                            MH: 0
-                        </div>
-                        <div class="confidence-mini-badge confidence-MEDIUM">
-                            M: 0
-                        </div>
-                        <div class="confidence-mini-badge confidence-LOW">
-                            L: 0
-                        </div>
-                    </div>
-                </div>
-            
-                <div class="symbol-card">
-                    <h3>XAUUSD</h3>
-                    <div class="symbol-metrics">
-                        <div class="metric-item">
-                            <span>Total Señales:</span>
-                            <span class="metric-value">4</span>
-                        </div>
-                        <div class="metric-item">
-                            <span>Win Rate:</span>
-                            <span class="metric-value negative">0.0%</span>
-                        </div>
-                        <div class="metric-item">
-                            <span>P&L:</span>
-                            <span class="metric-value negative">0.00 EUR</span>
-                        </div>
-                        <div class="metric-item">
-                            <span>Ejecución:</span>
-                            <span class="metric-value">0.0%</span>
-                        </div>
-                    </div>
-                    <div class="confidence-breakdown">
-                        <div class="confidence-mini-badge confidence-HIGH">
-                            H: 0
-                        </div>
-                        <div class="confidence-mini-badge confidence-MEDIUM-HIGH">
-                            MH: 0
-                        </div>
-                        <div class="confidence-mini-badge confidence-MEDIUM">
-                            M: 1
-                        </div>
-                        <div class="confidence-mini-badge confidence-LOW">
-                            L: 3
-                        </div>
-                    </div>
-                </div>
-            
-                <div class="symbol-card">
-                    <h3>BTCEUR</h3>
-                    <div class="symbol-metrics">
-                        <div class="metric-item">
-                            <span>Total Señales:</span>
-                            <span class="metric-value">0</span>
-                        </div>
-                        <div class="metric-item">
-                            <span>Win Rate:</span>
-                            <span class="metric-value negative">0.0%</span>
-                        </div>
-                        <div class="metric-item">
-                            <span>P&L:</span>
-                            <span class="metric-value negative">0.00 EUR</span>
-                        </div>
-                        <div class="metric-item">
-                            <span>Ejecución:</span>
-                            <span class="metric-value">0.0%</span>
-                        </div>
-                    </div>
-                    <div class="confidence-breakdown">
-                        <div class="confidence-mini-badge confidence-HIGH">
-                            H: 0
-                        </div>
-                        <div class="confidence-mini-badge confidence-MEDIUM-HIGH">
-                            MH: 0
-                        </div>
-                        <div class="confidence-mini-badge confidence-MEDIUM">
-                            M: 0
-                        </div>
-                        <div class="confidence-mini-badge confidence-LOW">
-                            L: 0
-                        </div>
-                    </div>
-                </div>
-            
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Balance</div>
+                <div class="stat-value" style="color: #4caf50;">4885.63 €</div>
             </div>
-            
-            <div class="signals-table">
-                <h3>📋 Señales Filtradas (4 resultados)</h3>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Hora</th>
-                            <th>Símbolo</th>
-                            <th>Estrategia</th>
-                            <th>Dirección</th>
-                            <th>Precio</th>
-                            <th>Confianza</th>
-                            <th>Score</th>
-                            <th>Estado</th>
-                            <th>P&L</th>
-                        </tr>
-                    </thead>
-                    <tbody>
+            <div class="stat-card">
+                <div class="stat-label">Equity</div>
+                <div class="stat-value" style="color: #2196f3;">4885.63 €</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Margen Libre</div>
+                <div class="stat-value" style="color: #ff9800;">4885.63 €</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Posiciones Abiertas</div>
+                <div class="stat-value" style="color: #9c27b0;">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Señales Sesión</div>
+                <div class="stat-value" style="color: #607d8b;">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Sistema Cooldown</div>
+                <div class="stat-value">
+                    <span class="status-indicator status-active"></span>
+                    Activo
+                </div>
+            </div>
+        </div>
         
-                        <tr>
-                            <td>09:43:27</td>
-                            <td><strong>XAUUSD</strong></td>
-                            <td>rsi_fallback</td>
-                            <td>SELL</td>
-                            <td>5512.56000</td>
-                            <td><span class="confidence-badge confidence-LOW">LOW</span></td>
-                            <td>0/3</td>
-                            <td class="status-proposed">PROPUESTA</td>
-                            <td class="neutral">0.00 EUR</td>
-                        </tr>
-            
-                        <tr>
-                            <td>09:05:53</td>
-                            <td><strong>XAUUSD</strong></td>
-                            <td>rsi_fallback</td>
-                            <td>SELL</td>
-                            <td>5527.69000</td>
-                            <td><span class="confidence-badge confidence-LOW">LOW</span></td>
-                            <td>0/3</td>
-                            <td class="status-proposed">PROPUESTA</td>
-                            <td class="neutral">0.00 EUR</td>
-                        </tr>
-            
-                        <tr>
-                            <td>08:43:21</td>
-                            <td><strong>XAUUSD</strong></td>
-                            <td>rsi_fallback</td>
-                            <td>SELL</td>
-                            <td>5551.80000</td>
-                            <td><span class="confidence-badge confidence-LOW">LOW</span></td>
-                            <td>0/3</td>
-                            <td class="status-proposed">PROPUESTA</td>
-                            <td class="neutral">0.00 EUR</td>
-                        </tr>
-            
-                        <tr>
-                            <td>08:37:20</td>
-                            <td><strong>XAUUSD</strong></td>
-                            <td>rsi_fallback</td>
-                            <td>SELL</td>
-                            <td>5437.53000</td>
-                            <td><span class="confidence-badge confidence-MEDIUM">MEDIUM</span></td>
-                            <td>1/3</td>
-                            <td class="status-proposed">PROPUESTA</td>
-                            <td class="neutral">0.00 EUR</td>
-                        </tr>
-            
-                    </tbody>
-                </table>
-            </div>
-            
-            <div style="text-align: center; padding: 30px 20px; color: rgba(255, 255, 255, 0.6); border-top: 1px solid rgba(255, 255, 255, 0.1); margin-top: 40px;">
-                <p>🤖 Bot MT5 Dashboard Inteligente - Sistema de Confianza Integrado</p>
-                <p>Última actualización: 29/01/2026 13:42:22</p>
-                <p>Sesión: 20260129_083715 • Filtros: Símbolo=ALL, Confianza=ALL, Estado=ALL</p>
-            </div>
-        </body>
-        </html>
+        <div class="cooldown-info">
+            <h3>🔄 Estado del Sistema de Cooldowns</h3>
+            <p><strong>Filtro de Duplicados:</strong> ✅ Activo</p>
+            <p><strong>Gestor de Cooldowns:</strong> ✅ Activo</p>
+            <p><strong>Configuración XAUUSD:</strong> Ultra-selectivo (20min cooldown, 30min por dirección)</p>
+            <p><strong>Última actualización:</strong> 11:16:20</p>
+        </div>
         
+        <div class="charts-section">
+            <div class="chart-container">
+                <div id="confidence-chart"></div>
+            </div>
+            <div class="chart-container">
+                <div id="cooldown-chart"></div>
+            </div>
+            <div class="chart-container">
+                <div id="equity-chart"></div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>🚀 Bot MT5 con Sistema Inteligente de Señales | Actualización automática cada 5 minutos</p>
+            <p>Sesión iniciada: 2026-02-01 23:55:45 | Uptime: 1 day, 11:20:34</p>
+        </div>
+    </div>
+    
+    <script>
+        // Gráfico de confianza
+        var confidenceData = {"data":[],"layout":{"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"annotations":[{"showarrow":false,"text":"No hay datos de se\u00f1ales","x":0.5,"xref":"paper","y":0.5,"yref":"paper"}]}};
+        Plotly.newPlot('confidence-chart', confidenceData.data, confidenceData.layout);
+        
+        // Gráfico de cooldowns
+        var cooldownData = {"data":[{"marker":{"color":["#51cf66","#51cf66","#51cf66"]},"text":["0s","0s","0s"],"textposition":"auto","x":["EURUSD","XAUUSD","BTCEUR"],"y":[0,0,0],"type":"bar"}],"layout":{"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"title":{"text":"Estado de Cooldowns por S\u00edmbolo"},"xaxis":{"title":{"text":"S\u00edmbolo"}},"yaxis":{"title":{"text":"Cooldown Restante (segundos)"}},"height":300}};
+        Plotly.newPlot('cooldown-chart', cooldownData.data, cooldownData.layout);
+        
+        // Gráfico de equity
+        var equityData = {"data":[{"line":{"color":"#00ff88"},"mode":"markers+lines","name":"Equity","x":["2026-02-03T11:16:20.591170"],"y":[4885.63],"type":"scatter"}],"layout":{"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"title":{"text":"Curva de Equity"},"xaxis":{"title":{"text":"Tiempo"}},"yaxis":{"title":{"text":"Equity (EUR)"}},"height":300}};
+        Plotly.newPlot('equity-chart', equityData.data, equityData.layout);
+        
+        // Auto-refresh cada 5 minutos
+        setTimeout(function() {
+            location.reload();
+        }, 300000);
+    </script>
+</body>
+</html>

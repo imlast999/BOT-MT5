@@ -1,6 +1,6 @@
 """
-Dashboard en tiempo real que se actualiza automáticamente
-Muestra datos reales del bot con actualización cada 5 minutos
+Dashboard Inteligente Consolidado para Bot MT5
+Integra sistema de confianza, filtros avanzados, cooldowns y análisis por símbolo
 """
 
 import json
@@ -8,16 +8,49 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import sqlite3
 import threading
 import time
-from typing import Dict, List, Any
-import MetaTrader5 as mt5
-from mt5_client import initialize as mt5_initialize
+from typing import Dict, List, Any, Optional
 
-# Importar el tracker de señales rechazadas
+# Servidor web simple para servir el HTML
+try:
+    from flask import Flask, send_file
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    Flask = None
+
+# Importar plotly de forma segura
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    from plotly.subplots import make_subplots
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+    go = None
+    px = None
+
+# Importar MT5 de forma segura
+try:
+    import MetaTrader5 as mt5
+    from mt5_client import initialize as mt5_initialize
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
+    mt5 = None
+
+# Importar sistemas del bot
+try:
+    from confidence_system import confidence_system
+    CONFIDENCE_SYSTEM_AVAILABLE = True
+except ImportError:
+    CONFIDENCE_SYSTEM_AVAILABLE = False
+    confidence_system = None
+
 try:
     from rejected_signals_tracker import rejected_signals_tracker
     REJECTION_TRACKING_AVAILABLE = True
@@ -25,99 +58,125 @@ except ImportError:
     REJECTION_TRACKING_AVAILABLE = False
     rejected_signals_tracker = None
 
+try:
+    from duplicate_filter import duplicate_filter
+    DUPLICATE_FILTER_AVAILABLE = True
+except ImportError:
+    DUPLICATE_FILTER_AVAILABLE = False
+    duplicate_filter = None
+
+try:
+    from signal_cooldown_manager import signal_cooldown_manager
+    COOLDOWN_MANAGER_AVAILABLE = True
+except ImportError:
+    COOLDOWN_MANAGER_AVAILABLE = False
+    signal_cooldown_manager = None
+
 class DashboardLogger:
-    """Logger para el dashboard que escribe tanto a consola como a archivo"""
+    """Logger mejorado para el dashboard"""
     
     def __init__(self):
         self.log_file = os.path.join(os.path.dirname(__file__), 'logs.txt')
     
     def log(self, message: str):
         """Escribir mensaje tanto a consola como a archivo"""
-        print(message)  # Mostrar en consola
+        print(message)
         try:
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(message + '\n')
         except Exception:
-            pass  # No fallar si no se puede escribir al archivo
+            pass
 
 dashboard_logger = DashboardLogger()
 
-class LiveDashboard:
+class ConsolidatedLiveDashboard:
+    """Dashboard inteligente consolidado con todas las funcionalidades"""
+    
     def __init__(self):
         self.db_path = "bot_state.db"
         self.dashboard_path = "live_dashboard.html"
-        self.update_interval = 300  # 5 minutos en segundos
+        self.update_interval = 300  # 5 minutos
         self.bot_start_time = datetime.now()
         self.session_id = self.bot_start_time.strftime('%Y%m%d_%H%M%S')
         self.is_running = False
         self.update_thread = None
         
-        # Crear tablas para datos reales de la sesión
-        self.init_session_db()
+        # Símbolos monitoreados
+        self.symbols = ['EURUSD', 'XAUUSD', 'BTCEUR']
         
-        # Limpiar datos de sesión anterior y empezar desde cero
+        # Colores del tema oscuro integrado
+        self.colors = {
+            'background': '#0d1117',
+            'surface': '#161b22', 
+            'surface_light': '#21262d',
+            'primary': '#58a6ff',
+            'success': '#3fb950',
+            'warning': '#d29922',
+            'error': '#f85149',
+            'text_primary': '#f0f6fc',
+            'text_secondary': '#8b949e',
+            'border': '#30363d',
+            'accent': '#7c3aed'
+        }
+        
+        # Niveles de confianza
+        self.confidence_levels = ['LOW', 'MEDIUM', 'MEDIUM-HIGH', 'HIGH']
+        self.confidence_colors = {
+            'LOW': '#ff4444',
+            'MEDIUM': '#ffaa00', 
+            'MEDIUM-HIGH': '#00ccff',
+            'HIGH': '#00ff88'
+        }
+        
+        # Estadísticas del bot
+        self.bot_stats = {
+            'scans': 0,
+            'signals': 0,
+            'last_update': datetime.now()
+        }
+        
+        # Inicializar base de datos mejorada
+        self.init_enhanced_db()
         self.reset_session_data()
     
-    def init_session_db(self):
-        """Inicializar base de datos para datos reales de la sesión actual"""
+    def init_enhanced_db(self):
+        """Inicializar base de datos con tablas mejoradas para sistema de confianza"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         
-        # Tabla para trades reales de la sesión actual
+        # Tabla mejorada de señales con sistema de confianza
         c.execute('''
-            CREATE TABLE IF NOT EXISTS session_trades (
+            CREATE TABLE IF NOT EXISTS enhanced_signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
-                pair TEXT NOT NULL,
+                symbol TEXT NOT NULL,
                 strategy TEXT NOT NULL,
-                type TEXT NOT NULL,
-                entry_price REAL NOT NULL,
+                direction TEXT NOT NULL,
+                price REAL NOT NULL,
                 sl_price REAL NOT NULL,
                 tp_price REAL NOT NULL,
-                lot_size REAL NOT NULL,
-                pnl REAL DEFAULT 0,
-                status TEXT DEFAULT 'OPEN',
-                mt5_ticket INTEGER,
-                confidence TEXT,
-                created_at TEXT NOT NULL,
-                closed_at TEXT,
-                close_price REAL
+                confidence_level TEXT NOT NULL,
+                confidence_score INTEGER NOT NULL,
+                confidence_details TEXT,
+                status TEXT DEFAULT 'PROPOSED',
+                executed BOOLEAN DEFAULT 0,
+                lot_size REAL DEFAULT 0.01,
+                zone TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
-        # Tabla para estadísticas de la sesión actual
+        # Tabla de estadísticas de cooldown
         c.execute('''
-            CREATE TABLE IF NOT EXISTS session_stats (
-                session_id TEXT PRIMARY KEY,
-                start_time TEXT NOT NULL,
-                end_time TEXT,
-                total_signals_generated INTEGER DEFAULT 0,
-                total_signals_executed INTEGER DEFAULT 0,
-                total_scans INTEGER DEFAULT 0,
-                initial_balance REAL DEFAULT 5000.0,
-                current_balance REAL DEFAULT 5000.0,
-                peak_balance REAL DEFAULT 5000.0,
-                max_drawdown REAL DEFAULT 0.0,
-                total_pnl REAL DEFAULT 0.0,
-                win_trades INTEGER DEFAULT 0,
-                loss_trades INTEGER DEFAULT 0,
-                last_update TEXT NOT NULL
-            )
-        ''')
-        
-        # Tabla para snapshots de balance cada 5 minutos
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS balance_snapshots (
+            CREATE TABLE IF NOT EXISTS cooldown_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
-                balance REAL NOT NULL,
-                equity REAL NOT NULL,
-                margin REAL DEFAULT 0,
-                free_margin REAL DEFAULT 0,
-                profit REAL DEFAULT 0,
-                open_positions INTEGER DEFAULT 0
+                symbol TEXT NOT NULL,
+                blocked_reason TEXT,
+                cooldown_remaining INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -125,1192 +184,863 @@ class LiveDashboard:
         conn.close()
     
     def reset_session_data(self):
-        """Limpiar datos de sesión anterior y empezar desde cero"""
+        """Resetear datos de la sesión actual"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         
-        # Insertar nueva sesión con datos iniciales en cero
+        # Limpiar datos de sesiones anteriores (mantener solo últimas 24h)
+        cutoff_time = (datetime.now() - timedelta(hours=24)).isoformat()
+        c.execute('DELETE FROM enhanced_signals WHERE timestamp < ?', (cutoff_time,))
+        c.execute('DELETE FROM cooldown_stats WHERE timestamp < ?', (cutoff_time,))
+        
+        conn.commit()
+        conn.close()
+        
+        dashboard_logger.log(f"🔄 Sesión iniciada: {self.session_id} - Sistema de confianza integrado")
+    
+    def add_signal_with_confidence(self, signal_data: Dict):
+        """Añadir señal con información de confianza al dashboard"""
         try:
-            # Obtener balance inicial real de MT5
-            initial_balance = 5000.0
-            try:
-                import MetaTrader5 as mt5
-                from mt5_client import initialize as mt5_initialize
-                mt5_initialize()
-                account_info = mt5.account_info()
-                if account_info:
-                    initial_balance = account_info.balance
-            except Exception:
-                pass
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            # Extraer datos de confianza
+            confidence_details = signal_data.get('confidence_details', {})
+            confidence_details_json = json.dumps(confidence_details) if confidence_details else '{}'
             
             c.execute('''
-                INSERT OR REPLACE INTO session_stats 
-                (session_id, start_time, initial_balance, current_balance, peak_balance, last_update) 
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                self.session_id, 
-                self.bot_start_time.isoformat(), 
-                initial_balance,
-                initial_balance,
-                initial_balance,
-                datetime.now().isoformat()
-            ))
-            
-            # Crear primer snapshot de balance
-            c.execute('''
-                INSERT INTO balance_snapshots 
-                (session_id, timestamp, balance, equity) 
-                VALUES (?, ?, ?, ?)
+                INSERT INTO enhanced_signals (
+                    session_id, timestamp, symbol, strategy, direction, price,
+                    sl_price, tp_price, confidence_level, confidence_score,
+                    confidence_details, status, executed, lot_size, zone
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 self.session_id,
-                self.bot_start_time.isoformat(),
-                initial_balance,
-                initial_balance
+                signal_data.get('timestamp', datetime.now().isoformat()),
+                signal_data.get('symbol', 'UNKNOWN'),
+                signal_data.get('strategy', 'unknown'),
+                signal_data.get('direction', 'BUY'),
+                signal_data.get('price', 0.0),
+                signal_data.get('sl_price', 0.0),
+                signal_data.get('tp_price', 0.0),
+                signal_data.get('confidence_level', 'MEDIUM'),
+                signal_data.get('confidence_score', 1),
+                confidence_details_json,
+                signal_data.get('status', 'PROPOSED'),
+                signal_data.get('executed', False),
+                signal_data.get('lot_size', 0.01),
+                signal_data.get('zone', '')
             ))
             
             conn.commit()
-            dashboard_logger.log(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Nueva sesión iniciada: {self.session_id}")
-            dashboard_logger.log(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Balance inicial: {initial_balance} EUR")
+            conn.close()
             
         except Exception as e:
-            dashboard_logger.log(f"Error inicializando sesión: {e}")
-        finally:
-            conn.close()
+            dashboard_logger.log(f"❌ Error añadiendo señal al dashboard: {e}")
     
-    def get_bot_uptime(self) -> Dict[str, Any]:
-        """Obtener tiempo de funcionamiento del bot de la sesión actual"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-        c.execute('''
-            SELECT start_time, total_scans, total_signals_generated, total_signals_executed 
-            FROM session_stats WHERE session_id = ?
-        ''', (self.session_id,))
-        row = c.fetchone()
-        conn.close()
-        
-        if row:
-            start_time = datetime.fromisoformat(row[0])
-            uptime = datetime.now() - start_time
+    def add_cooldown_stat(self, symbol: str, blocked_reason: str, cooldown_remaining: int):
+        """Añadir estadística de cooldown bloqueado"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
             
-            days = uptime.days
-            hours, remainder = divmod(uptime.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
+            c.execute('''
+                INSERT INTO cooldown_stats (
+                    session_id, timestamp, symbol, blocked_reason, cooldown_remaining
+                ) VALUES (?, ?, ?, ?, ?)
+            ''', (
+                self.session_id,
+                datetime.now().isoformat(),
+                symbol,
+                blocked_reason,
+                cooldown_remaining
+            ))
             
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            dashboard_logger.log(f"❌ Error añadiendo estadística de cooldown: {e}")
+    
+    def create_simple_chart(self, title: str, message: str):
+        """Crear un gráfico simple sin plotly"""
+        return {
+            'data': [],
+            'layout': {
+                'title': title,
+                'annotations': [{'text': message, 'x': 0.5, 'y': 0.5, 'showarrow': False}]
+            }
+        }
+    
+    def get_mt5_data(self):
+        """Obtener datos de MT5 de forma segura"""
+        if not MT5_AVAILABLE:
             return {
-                'uptime_str': f"{days}d {hours}h {minutes}m",
-                'uptime_seconds': uptime.total_seconds(),
-                'total_scans': row[1] or 0,
-                'total_signals': row[2] or 0,
-                'total_executed': row[3] or 0,
-                'start_time': start_time,
-                'session_id': self.session_id
+                'balance': 0.0,
+                'equity': 0.0,
+                'margin': 0.0,
+                'free_margin': 0.0,
+                'positions': []
             }
         
-        return {
-            'uptime_str': "0d 0h 0m",
-            'uptime_seconds': 0,
-            'total_scans': 0,
-            'total_signals': 0,
-            'total_executed': 0,
-            'start_time': self.bot_start_time,
-            'session_id': self.session_id
-        }
-    
-    def get_mt5_account_info(self) -> Dict[str, Any]:
-        """Obtener información real de la cuenta MT5"""
         try:
-            mt5_initialize()
-            account_info = mt5.account_info()
+            if not mt5.initialize():
+                mt5_initialize()
             
-            if account_info:
+            account_info = mt5.account_info()
+            if account_info is None:
                 return {
-                    'balance': account_info.balance,
-                    'equity': account_info.equity,
-                    'margin': account_info.margin,
-                    'free_margin': account_info.margin_free,
-                    'profit': account_info.profit,
-                    'currency': account_info.currency
+                    'balance': 0.0,
+                    'equity': 0.0,
+                    'margin': 0.0,
+                    'free_margin': 0.0,
+                    'positions': []
                 }
-        except Exception as e:
-            print(f"Error obteniendo info MT5: {e}")
-        
-        # Datos por defecto si MT5 no está disponible
-        return {
-            'balance': 5000.0,
-            'equity': 5000.0,
-            'margin': 0.0,
-            'free_margin': 5000.0,
-            'profit': 0.0,
-            'currency': 'USD'
-        }
-    
-    def get_open_positions(self) -> List[Dict]:
-        """Obtener posiciones abiertas reales de MT5"""
-        try:
-            mt5_initialize()
+            
             positions = mt5.positions_get()
+            positions_list = []
             
             if positions:
-                return [{
-                    'ticket': pos.ticket,
-                    'symbol': pos.symbol,
-                    'type': 'BUY' if pos.type == 0 else 'SELL',
-                    'volume': pos.volume,
-                    'price_open': pos.price_open,
-                    'sl': pos.sl,
-                    'tp': pos.tp,
-                    'profit': pos.profit,
-                    'time': datetime.fromtimestamp(pos.time)
-                } for pos in positions]
-        except Exception as e:
-            print(f"Error obteniendo posiciones: {e}")
-        
-        return []
-    
-    def get_session_trades(self) -> List[Dict]:
-        """Obtener trades reales de la sesión actual"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-        c.execute('''
-            SELECT timestamp, pair, strategy, type, pnl, status, confidence, lot_size, mt5_ticket
-            FROM session_trades 
-            WHERE session_id = ?
-            ORDER BY timestamp DESC
-        ''', (self.session_id,))
-        
-        trades = []
-        for row in c.fetchall():
-            trades.append({
-                'timestamp': row[0],
-                'pair': row[1],
-                'strategy': row[2],
-                'type': row[3],
-                'pnl': row[4] or 0.0,
-                'status': row[5],
-                'confidence': row[6] or 'MEDIUM',
-                'lot_size': row[7] or 0.01,
-                'mt5_ticket': row[8]
-            })
-        
-        conn.close()
-        return trades
-    
-    def add_session_trade(self, trade_data: Dict):
-        """Añadir un trade real a la sesión actual"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-        try:
-            c.execute('''
-                INSERT INTO session_trades 
-                (session_id, timestamp, pair, strategy, type, entry_price, sl_price, tp_price, 
-                 lot_size, pnl, status, mt5_ticket, confidence, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                self.session_id,
-                trade_data.get('timestamp', datetime.now().isoformat()),
-                trade_data.get('pair', 'EURUSD'),
-                trade_data.get('strategy', 'unknown'),
-                trade_data.get('type', 'BUY'),
-                trade_data.get('entry_price', 0.0),
-                trade_data.get('sl_price', 0.0),
-                trade_data.get('tp_price', 0.0),
-                trade_data.get('lot_size', 0.01),
-                trade_data.get('pnl', 0.0),
-                trade_data.get('status', 'OPEN'),
-                trade_data.get('mt5_ticket'),
-                trade_data.get('confidence', 'MEDIUM'),
-                datetime.now().isoformat()
-            ))
+                for pos in positions:
+                    positions_list.append({
+                        'ticket': pos.ticket,
+                        'symbol': pos.symbol,
+                        'type': 'BUY' if pos.type == 0 else 'SELL',
+                        'volume': pos.volume,
+                        'price_open': pos.price_open,
+                        'price_current': pos.price_current,
+                        'profit': pos.profit,
+                        'swap': pos.swap,
+                        'comment': pos.comment
+                    })
             
-            conn.commit()
-            dashboard_logger.log(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Trade añadido a sesión: {trade_data.get('pair')} {trade_data.get('type')}")
-            
-        except Exception as e:
-            dashboard_logger.log(f"Error añadiendo trade a sesión: {e}")
-        finally:
-            conn.close()
-    
-    def update_trade_result(self, mt5_ticket: int, pnl: float, status: str = 'CLOSED'):
-        """Actualizar resultado de un trade cuando se cierra"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-        try:
-            c.execute('''
-                UPDATE session_trades 
-                SET pnl = ?, status = ?, closed_at = ?
-                WHERE mt5_ticket = ? AND session_id = ?
-            ''', (pnl, status, datetime.now().isoformat(), mt5_ticket, self.session_id))
-            
-            conn.commit()
-            
-            if c.rowcount > 0:
-                dashboard_logger.log(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Trade actualizado: Ticket {mt5_ticket}, P&L: {pnl}")
-                # Actualizar estadísticas de la sesión
-                self.update_session_stats()
-            
-        except Exception as e:
-            dashboard_logger.log(f"Error actualizando trade: {e}")
-        finally:
-            conn.close()
-    
-    def update_session_stats(self):
-        """Actualizar estadísticas de la sesión actual"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-        try:
-            # Obtener balance actual de MT5
-            current_balance = 5000.0
-            current_equity = 5000.0
-            try:
-                import MetaTrader5 as mt5
-                from mt5_client import initialize as mt5_initialize
-                mt5_initialize()
-                account_info = mt5.account_info()
-                if account_info:
-                    current_balance = account_info.balance
-                    current_equity = account_info.equity
-            except Exception:
-                pass
-            
-            # Calcular estadísticas de trades de la sesión
-            c.execute('''
-                SELECT 
-                    COUNT(*) as total_trades,
-                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                    SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
-                    SUM(pnl) as total_pnl,
-                    MAX(pnl) as best_trade,
-                    MIN(pnl) as worst_trade
-                FROM session_trades 
-                WHERE session_id = ? AND status = 'CLOSED'
-            ''', (self.session_id,))
-            
-            trade_stats = c.fetchone()
-            total_trades = trade_stats[0] or 0
-            wins = trade_stats[1] or 0
-            losses = trade_stats[2] or 0
-            total_pnl = trade_stats[3] or 0.0
-            
-            # Obtener balance inicial
-            c.execute('SELECT initial_balance FROM session_stats WHERE session_id = ?', (self.session_id,))
-            initial_balance = c.fetchone()[0] or 5000.0
-            
-            # Calcular drawdown
-            peak_balance = max(current_balance, initial_balance)
-            drawdown = ((peak_balance - current_balance) / peak_balance) * 100 if peak_balance > 0 else 0
-            
-            # Actualizar estadísticas
-            c.execute('''
-                UPDATE session_stats 
-                SET current_balance = ?, peak_balance = ?, max_drawdown = ?, 
-                    total_pnl = ?, win_trades = ?, loss_trades = ?, last_update = ?
-                WHERE session_id = ?
-            ''', (
-                current_balance, peak_balance, drawdown, total_pnl, 
-                wins, losses, datetime.now().isoformat(), self.session_id
-            ))
-            
-            # Crear snapshot de balance
-            c.execute('''
-                INSERT INTO balance_snapshots 
-                (session_id, timestamp, balance, equity) 
-                VALUES (?, ?, ?, ?)
-            ''', (self.session_id, datetime.now().isoformat(), current_balance, current_equity))
-            
-            conn.commit()
-            
-        except Exception as e:
-            dashboard_logger.log(f"Error actualizando estadísticas de sesión: {e}")
-        finally:
-            conn.close()
-    
-    def get_balance_history(self) -> List[Dict]:
-        """Obtener historial de balance de la sesión actual"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-        c.execute('''
-            SELECT timestamp, balance, equity 
-            FROM balance_snapshots 
-            WHERE session_id = ?
-            ORDER BY timestamp ASC
-        ''', (self.session_id,))
-        
-        history = []
-        for row in c.fetchall():
-            history.append({
-                'timestamp': row[0],
-                'balance': row[1],
-                'equity': row[2]
-            })
-        
-        conn.close()
-        return history
-    
-    def calculate_statistics(self, trades: List[Dict]) -> Dict[str, Any]:
-        """Calcular estadísticas de trading de la sesión actual"""
-        if not trades:
             return {
-                'total_trades': 0,
-                'win_rate': 0,
-                'total_pnl': 0,
-                'roi': 0,
-                'max_drawdown': 0,
-                'profit_factor': 0,
-                'gross_profit': 0,
-                'gross_loss': 0,
-                'avg_win': 0,
-                'avg_loss': 0,
-                'best_trade': 0,
-                'worst_trade': 0
+                'balance': float(account_info.balance),
+                'equity': float(account_info.equity),
+                'margin': float(account_info.margin),
+                'free_margin': float(account_info.margin_free),
+                'positions': positions_list
             }
-        
-        # Usar datos reales de la sesión
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-        # Obtener estadísticas de la sesión
-        c.execute('''
-            SELECT 
-                initial_balance, current_balance, total_pnl, max_drawdown,
-                win_trades, loss_trades
-            FROM session_stats 
-            WHERE session_id = ?
-        ''', (self.session_id,))
-        
-        session_data = c.fetchone()
-        if not session_data:
-            conn.close()
-            return self.calculate_statistics([])  # Recursión con lista vacía
-        
-        initial_balance = session_data[0] or 5000.0
-        current_balance = session_data[1] or 5000.0
-        total_pnl = session_data[2] or 0.0
-        max_drawdown = session_data[3] or 0.0
-        win_trades = session_data[4] or 0
-        loss_trades = session_data[5] or 0
-        
-        # Calcular métricas adicionales de trades
-        c.execute('''
-            SELECT 
-                SUM(CASE WHEN pnl > 0 THEN pnl ELSE 0 END) as gross_profit,
-                SUM(CASE WHEN pnl < 0 THEN ABS(pnl) ELSE 0 END) as gross_loss,
-                AVG(CASE WHEN pnl > 0 THEN pnl ELSE NULL END) as avg_win,
-                AVG(CASE WHEN pnl < 0 THEN pnl ELSE NULL END) as avg_loss,
-                MAX(pnl) as best_trade,
-                MIN(pnl) as worst_trade
-            FROM session_trades 
-            WHERE session_id = ? AND status = 'CLOSED'
-        ''', (self.session_id,))
-        
-        trade_metrics = c.fetchone()
-        conn.close()
-        
-        gross_profit = trade_metrics[0] or 0.0
-        gross_loss = trade_metrics[1] or 0.0
-        avg_win = trade_metrics[2] or 0.0
-        avg_loss = trade_metrics[3] or 0.0
-        best_trade = trade_metrics[4] or 0.0
-        worst_trade = trade_metrics[5] or 0.0
-        
-        # Calcular métricas finales
-        total_trades = win_trades + loss_trades
-        win_rate = (win_trades / total_trades) * 100 if total_trades > 0 else 0
-        roi = (total_pnl / initial_balance) * 100 if initial_balance > 0 else 0
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
-        
-        return {
-            'total_trades': total_trades,
-            'win_rate': win_rate,
-            'total_pnl': total_pnl,
-            'roi': roi,
-            'max_drawdown': max_drawdown,
-            'profit_factor': profit_factor,
-            'gross_profit': gross_profit,
-            'gross_loss': gross_loss,
-            'avg_win': avg_win,
-            'avg_loss': avg_loss,
-            'best_trade': best_trade,
-            'worst_trade': worst_trade,
-            'initial_balance': initial_balance,
-            'current_balance': current_balance
-        }
+            
+        except Exception as e:
+            dashboard_logger.log(f"❌ Error obteniendo datos MT5: {e}")
+            return {
+                'balance': 0.0,
+                'equity': 0.0,
+                'margin': 0.0,
+                'free_margin': 0.0,
+                'positions': []
+            }
     
-    def generate_equity_curve_chart(self, trades: List[Dict], timeframe: str = '1D') -> str:
-        """Generar gráfico de curva de equity con datos reales de la sesión"""
-        balance_history = self.get_balance_history()
+    def get_cooldown_data(self):
+        """Obtener datos de cooldown de los sistemas"""
+        cooldown_data = {
+            'duplicate_filter_available': DUPLICATE_FILTER_AVAILABLE,
+            'cooldown_manager_available': COOLDOWN_MANAGER_AVAILABLE,
+            'stats': {}
+        }
         
-        if not balance_history:
-            return "<div style='text-align: center; color: #888; padding: 50px;'>No hay datos de balance disponibles para esta sesión</div>"
+        # Datos del duplicate_filter
+        if DUPLICATE_FILTER_AVAILABLE and duplicate_filter:
+            try:
+                filter_stats = duplicate_filter.get_stats()
+                cooldown_data['stats']['duplicate_filter'] = filter_stats
+            except Exception as e:
+                dashboard_logger.log(f"❌ Error obteniendo stats de duplicate_filter: {e}")
         
-        # Convertir a DataFrame
-        df = pd.DataFrame(balance_history)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.sort_values('timestamp')
+        # Datos del cooldown_manager
+        if COOLDOWN_MANAGER_AVAILABLE and signal_cooldown_manager:
+            try:
+                manager_stats = signal_cooldown_manager.get_stats()
+                cooldown_data['stats']['cooldown_manager'] = manager_stats
+            except Exception as e:
+                dashboard_logger.log(f"❌ Error obteniendo stats de cooldown_manager: {e}")
         
-        # Resample según timeframe si hay suficientes datos
-        if len(df) > 1:
-            df_indexed = df.set_index('timestamp')
-            if timeframe == '1H' and len(df) > 12:
-                df_resampled = df_indexed.resample('1H')[['balance', 'equity']].last().dropna()
-            elif timeframe == '4H' and len(df) > 6:
-                df_resampled = df_indexed.resample('4H')[['balance', 'equity']].last().dropna()
-            elif timeframe == '1D':
-                df_resampled = df_indexed.resample('1D')[['balance', 'equity']].last().dropna()
-            elif timeframe == '1W':
-                df_resampled = df_indexed.resample('1W')[['balance', 'equity']].last().dropna()
-            else:
-                df_resampled = df_indexed[['balance', 'equity']]
-        else:
-            df_resampled = df.set_index('timestamp')[['balance', 'equity']]
+        return cooldown_data
+    
+    def create_confidence_chart(self, signals_df):
+        """Crear gráfico de distribución de confianza con tema oscuro"""
+        if not PLOTLY_AVAILABLE:
+            return self.create_simple_chart("Distribución de Confianza", "Plotly no disponible")
         
-        fig = go.Figure()
+        if signals_df.empty:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No hay datos de señales",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(color=self.colors['text_secondary'], size=14)
+            )
+            fig.update_layout(
+                paper_bgcolor=self.colors['surface'],
+                plot_bgcolor=self.colors['surface'],
+                font=dict(color=self.colors['text_primary'])
+            )
+            return fig
         
-        # Línea de balance
-        fig.add_trace(go.Scatter(
-            x=df_resampled.index,
-            y=df_resampled['balance'],
-            mode='lines+markers',
-            name='Balance',
-            line=dict(color='#00ff88', width=2),
-            marker=dict(size=4)
-        ))
+        # Contar señales por nivel de confianza
+        confidence_counts = signals_df['confidence_level'].value_counts()
         
-        # Línea de equity
-        fig.add_trace(go.Scatter(
-            x=df_resampled.index,
-            y=df_resampled['equity'],
-            mode='lines+markers',
-            name='Equity',
-            line=dict(color='#00ccff', width=2, dash='dot'),
-            marker=dict(size=4)
-        ))
+        # Colores por confianza con tema oscuro
+        confidence_colors = {
+            'HIGH': self.colors['success'],
+            'MEDIUM-HIGH': self.colors['primary'],
+            'MEDIUM': self.colors['warning'],
+            'LOW': self.colors['error'],
+            'UNKNOWN': self.colors['text_secondary']
+        }
         
-        # Línea de balance inicial
-        if len(df_resampled) > 0:
-            initial_balance = df_resampled['balance'].iloc[0]
-            fig.add_hline(y=initial_balance, line_dash="dash", line_color="rgba(255,255,255,0.3)",
-                         annotation_text=f"Balance Inicial: {initial_balance:.2f}")
+        colors = [confidence_colors.get(level, self.colors['text_secondary']) for level in confidence_counts.index]
+        
+        fig = go.Figure(data=[
+            go.Bar(
+                x=confidence_counts.index,
+                y=confidence_counts.values,
+                marker_color=colors,
+                text=confidence_counts.values,
+                textposition='auto',
+                textfont=dict(color=self.colors['text_primary'])
+            )
+        ])
         
         fig.update_layout(
-            title=f"Curva de Equity - Sesión Actual ({timeframe})",
-            xaxis_title="Tiempo",
-            yaxis_title="Balance (EUR)",
-            template="plotly_dark",
-            height=400,
-            showlegend=True,
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            legend=dict(
-                yanchor="top",
-                y=0.99,
-                xanchor="left",
-                x=0.01
-            )
+            title=dict(
+                text="Distribución de Confianza",
+                font=dict(color=self.colors['text_primary'], size=16)
+            ),
+            xaxis=dict(
+                title="Nivel de Confianza",
+                color=self.colors['text_primary'],
+                gridcolor=self.colors['border']
+            ),
+            yaxis=dict(
+                title="Cantidad de Señales",
+                color=self.colors['text_primary'],
+                gridcolor=self.colors['border']
+            ),
+            paper_bgcolor=self.colors['surface'],
+            plot_bgcolor=self.colors['surface'],
+            font=dict(color=self.colors['text_primary']),
+            height=300
         )
         
-        return fig.to_html(include_plotlyjs='cdn', div_id="equity-curve")
+        return fig
     
-    def get_rejection_statistics(self) -> Dict:
-        """Obtener estadísticas de señales rechazadas para el dashboard"""
-        if not REJECTION_TRACKING_AVAILABLE or not rejected_signals_tracker:
-            return {
-                'available': False,
-                'total_rejections': 0,
-                'by_symbol': {},
-                'by_category': {},
-                'recent_rejections': []
-            }
+    def create_cooldown_chart(self, cooldown_data):
+        """Crear gráfico de estado de cooldowns con tema oscuro"""
+        fig = go.Figure()
         
-        try:
-            # Obtener estadísticas de las últimas 24 horas (sin filtrar por session_id para mostrar todos los rechazos)
-            stats = rejected_signals_tracker.get_rejection_stats(hours_back=24, session_id=None)
-            
-            # Obtener rechazos recientes
-            recent = rejected_signals_tracker.get_recent_rejections(limit=10)
-            
-            return {
-                'available': True,
-                'total_rejections': stats.get('total_rejections', 0),
-                'by_symbol': stats.get('by_symbol', {}),
-                'by_category': stats.get('by_category', {}),
-                'by_strategy': stats.get('by_strategy', {}),
-                'by_hour': stats.get('by_hour', {}),
-                'recent_rejections': recent
-            }
-        except Exception as e:
-            self.logger.error(f"Error obteniendo estadísticas de rechazos: {e}")
-            return {
-                'available': False,
-                'total_rejections': 0,
-                'by_symbol': {},
-                'by_category': {},
-                'recent_rejections': []
-            }
-
-    def generate_dashboard_html(self, timeframe: str = '1D') -> str:
-        """Generar HTML completo del dashboard con datos reales de la sesión"""
-        # Obtener datos reales de la sesión actual
-        uptime_info = self.get_bot_uptime()
-        account_info = self.get_mt5_account_info()
-        positions = self.get_open_positions()
-        trades = self.get_session_trades()
-        stats = self.calculate_statistics(trades)
-        rejection_stats = self.get_rejection_statistics()
+        if not cooldown_data.get('duplicate_filter_available', False):
+            fig.add_annotation(
+                text="Sistema de cooldown no disponible",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(color=self.colors['text_secondary'], size=14)
+            )
+            fig.update_layout(
+                paper_bgcolor=self.colors['surface'],
+                plot_bgcolor=self.colors['surface'],
+                font=dict(color=self.colors['text_primary'])
+            )
+            return fig
         
-        # Generar gráficos con datos reales
-        equity_chart = self.generate_equity_curve_chart(trades, timeframe)
+        # Obtener datos de cooldown por símbolo
+        filter_stats = cooldown_data.get('stats', {}).get('duplicate_filter', {})
+        symbols = ['EURUSD', 'XAUUSD', 'BTCEUR']
+        cooldown_remaining = []
         
-        # Balance final real
-        final_balance = stats.get('current_balance', account_info['balance'])
+        for symbol in symbols:
+            symbol_key = f'{symbol}_last_signal'
+            if symbol_key in filter_stats:
+                symbol_data = filter_stats[symbol_key]
+                if isinstance(symbol_data, dict):
+                    remaining = symbol_data.get('cooldown_remaining', '0s')
+                    # Extraer número de segundos
+                    remaining_seconds = int(remaining.replace('s', '')) if 's' in remaining else 0
+                    cooldown_remaining.append(remaining_seconds)
+                else:
+                    cooldown_remaining.append(0)
+            else:
+                cooldown_remaining.append(0)
         
-        html_content = f"""
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Bot MT5 - Dashboard Live (Sesión: {uptime_info['session_id']})</title>
-            <meta http-equiv="refresh" content="300"> <!-- Auto-refresh cada 5 minutos -->
-            <style>
-                * {{
-                    margin: 0;
-                    padding: 0;
-                    box-sizing: border-box;
-                }}
-                
-                body {{
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
-                    color: #ffffff;
-                    min-height: 100vh;
-                }}
-                
-                .header {{
-                    background: rgba(0, 0, 0, 0.4);
-                    padding: 15px 20px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    border-bottom: 2px solid #00ff88;
-                    backdrop-filter: blur(10px);
-                }}
-                
-                .header h1 {{
-                    font-size: 1.8em;
-                    background: linear-gradient(45deg, #00ff88, #00ccff);
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
-                }}
-                
-                .session-info {{
-                    font-size: 0.8em;
-                    color: rgba(255, 255, 255, 0.7);
-                    margin-top: 5px;
-                }}
-                
-                .status-info {{
-                    display: flex;
-                    gap: 20px;
-                    font-size: 0.9em;
-                }}
-                
-                .status-item {{
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                }}
-                
-                .status-value {{
-                    font-weight: bold;
-                    color: #00ff88;
-                }}
-                
-                .controls {{
-                    padding: 15px 20px;
-                    background: rgba(255, 255, 255, 0.05);
-                    display: flex;
-                    gap: 10px;
-                    align-items: center;
-                }}
-                
-                .timeframe-btn {{
-                    padding: 8px 15px;
-                    background: rgba(255, 255, 255, 0.1);
-                    border: 1px solid rgba(255, 255, 255, 0.2);
-                    color: white;
-                    border-radius: 5px;
-                    cursor: pointer;
-                    transition: all 0.3s;
-                }}
-                
-                .timeframe-btn:hover,
-                .timeframe-btn.active {{
-                    background: #00ff88;
-                    color: #000;
-                }}
-                
-                .stats-grid {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-                    gap: 15px;
-                    padding: 20px;
-                    max-width: 1400px;
-                    margin: 0 auto;
-                }}
-                
-                .stat-card {{
-                    background: rgba(255, 255, 255, 0.08);
-                    border-radius: 12px;
-                    padding: 20px;
-                    text-align: center;
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                    backdrop-filter: blur(10px);
-                    transition: transform 0.3s;
-                }}
-                
-                .stat-card:hover {{
-                    transform: translateY(-2px);
-                }}
-                
-                .stat-card h3 {{
-                    color: #00ff88;
-                    margin-bottom: 8px;
-                    font-size: 0.8em;
-                    text-transform: uppercase;
-                    letter-spacing: 1px;
-                }}
-                
-                .stat-card .value {{
-                    font-size: 1.8em;
-                    font-weight: bold;
-                    margin-bottom: 5px;
-                }}
-                
-                .rejection-breakdown {{
-                    display: flex;
-                    flex-direction: column;
-                    gap: 4px;
-                    font-size: 0.9em;
-                }}
-                
-                .rejection-item {{
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding: 2px 0;
-                }}
-                
-                .rejection-item .count {{
-                    background: rgba(255, 0, 0, 0.2);
-                    color: #ff6b6b;
-                    padding: 2px 6px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                    font-size: 0.8em;
-                }}
-                
-                .rejection-reason {{
-                    font-size: 0.85em;
-                    color: rgba(255, 255, 255, 0.8);
-                }}
-                
-                .category-tag {{
-                    background: rgba(255, 165, 0, 0.2);
-                    color: #ffa500;
-                    padding: 2px 6px;
-                    border-radius: 4px;
-                    font-size: 0.75em;
-                    text-transform: uppercase;
-                }}
-                
-                .table-container {{
-                    margin-top: 20px;
-                    background: rgba(255, 255, 255, 0.05);
-                    border-radius: 12px;
-                    padding: 15px;
-                }}
-                
-                .data-table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin-top: 10px;
-                }}
-                
-                .data-table th,
-                .data-table td {{
-                    padding: 8px 12px;
-                    text-align: left;
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-                }}
-                
-                .data-table th {{
-                    background: rgba(0, 255, 136, 0.1);
-                    color: #00ff88;
-                    font-weight: bold;
-                    font-size: 0.9em;
-                }}
-                
-                .data-table td {{
-                    font-size: 0.85em;
-                }}
-                
-                .stat-card .value {{
-                    font-size: 1.8em;
-                    font-weight: bold;
-                    margin-bottom: 5px;
-                }}
-                
-                .positive {{ color: #00ff88; }}
-                .negative {{ color: #ff4444; }}
-                .neutral {{ color: #ffaa00; }}
-                
-                .charts-container {{
-                    max-width: 1400px;
-                    margin: 0 auto;
-                    padding: 0 20px;
-                }}
-                
-                .chart-section {{
-                    background: rgba(255, 255, 255, 0.05);
-                    border-radius: 15px;
-                    margin-bottom: 20px;
-                    padding: 20px;
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                }}
-                
-                .positions-table {{
-                    background: rgba(255, 255, 255, 0.05);
-                    border-radius: 15px;
-                    padding: 20px;
-                    margin: 20px auto;
-                    max-width: 1400px;
-                }}
-                
-                .positions-table table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin-top: 15px;
-                }}
-                
-                .positions-table th,
-                .positions-table td {{
-                    padding: 12px;
-                    text-align: left;
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-                }}
-                
-                .positions-table th {{
-                    background: rgba(0, 255, 136, 0.2);
-                    color: #00ff88;
-                    font-weight: bold;
-                    text-transform: uppercase;
-                    font-size: 0.9em;
-                }}
-                
-                .footer {{
-                    text-align: center;
-                    padding: 30px 20px;
-                    color: rgba(255, 255, 255, 0.6);
-                    border-top: 1px solid rgba(255, 255, 255, 0.1);
-                    margin-top: 40px;
-                }}
-                
-                .live-indicator {{
-                    display: inline-block;
-                    width: 8px;
-                    height: 8px;
-                    background: #00ff88;
-                    border-radius: 50%;
-                    animation: pulse 2s infinite;
-                    margin-right: 5px;
-                }}
-                
-                .session-badge {{
-                    background: rgba(0, 255, 136, 0.2);
-                    color: #00ff88;
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    font-size: 0.7em;
-                    margin-left: 10px;
-                }}
-                
-                @keyframes pulse {{
-                    0% {{ opacity: 1; }}
-                    50% {{ opacity: 0.5; }}
-                    100% {{ opacity: 1; }}
-                }}
-                
-                @media (max-width: 768px) {{
-                    .stats-grid {{
-                        grid-template-columns: repeat(2, 1fr);
-                    }}
-                    
-                    .header {{
-                        flex-direction: column;
-                        gap: 10px;
-                    }}
-                    
-                    .status-info {{
-                        flex-wrap: wrap;
-                        justify-content: center;
-                    }}
-                }}
-            </style>
-            <script>
-                // Auto-refresh con indicador visual
-                let refreshCountdown = 300; // 5 minutos
-                
-                function updateCountdown() {{
-                    const minutes = Math.floor(refreshCountdown / 60);
-                    const seconds = refreshCountdown % 60;
-                    document.getElementById('refresh-countdown').textContent = 
-                        `${{minutes}}:${{seconds.toString().padStart(2, '0')}}`;
-                    
-                    if (refreshCountdown <= 0) {{
-                        location.reload();
-                    }} else {{
-                        refreshCountdown--;
-                    }}
-                }}
-                
-                // Actualizar cada segundo
-                setInterval(updateCountdown, 1000);
-                
-                // Función para cambiar timeframe (placeholder)
-                function changeTimeframe(tf) {{
-                    // En una implementación real, esto recargaría con el nuevo timeframe
-                    document.querySelectorAll('.timeframe-btn').forEach(btn => btn.classList.remove('active'));
-                    event.target.classList.add('active');
-                    // Aquí iría la lógica para recargar con nuevo timeframe
-                }}
-            </script>
-        </head>
-        <body>
-            <div class="header">
-                <div>
-                    <h1><span class="live-indicator"></span>Bot MT5 Trading - LIVE</h1>
-                    <div class="session-info">
-                        Sesión actual: {uptime_info['session_id']} 
-                        <span class="session-badge">DATOS REALES</span>
-                    </div>
-                    <small>Actualización automática cada 5 minutos</small>
-                </div>
-                <div class="status-info">
-                    <div class="status-item">
-                        <span>Tiempo Activo</span>
-                        <span class="status-value">{uptime_info['uptime_str']}</span>
-                    </div>
-                    <div class="status-item">
-                        <span>Scans Totales</span>
-                        <span class="status-value">{uptime_info['total_scans']:,}</span>
-                    </div>
-                    <div class="status-item">
-                        <span>Señales Generadas</span>
-                        <span class="status-value">{uptime_info['total_signals']:,}</span>
-                    </div>
-                    <div class="status-item">
-                        <span>Próxima Actualización</span>
-                        <span class="status-value" id="refresh-countdown">5:00</span>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="controls">
-                <span>Timeframe:</span>
-                <button class="timeframe-btn" onclick="changeTimeframe('1H')">1H</button>
-                <button class="timeframe-btn" onclick="changeTimeframe('4H')">4H</button>
-                <button class="timeframe-btn active" onclick="changeTimeframe('1D')">1D</button>
-                <button class="timeframe-btn" onclick="changeTimeframe('1W')">1W</button>
-            </div>
-            
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <h3>📊 Total Trades</h3>
-                    <div class="value">{stats['total_trades']}</div>
-                    <small>Sesión actual</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>🎯 Win Rate</h3>
-                    <div class="value {'positive' if stats['win_rate'] >= 50 else 'negative'}">{stats['win_rate']:.1f}%</div>
-                    <small>Trades cerrados</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>💰 ROI Sesión</h3>
-                    <div class="value {'positive' if stats['roi'] > 0 else 'negative'}">{stats['roi']:.2f}%</div>
-                    <small>Desde inicio</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>📈 P&L Total</h3>
-                    <div class="value {'positive' if stats['total_pnl'] > 0 else 'negative'}">{stats['total_pnl']:.2f} EUR</div>
-                    <small>Sesión actual</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>📉 Max Drawdown</h3>
-                    <div class="value negative">{stats['max_drawdown']:.2f}%</div>
-                    <small>Pico a valle</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>⚡ Balance Actual</h3>
-                    <div class="value {'positive' if final_balance >= stats.get('initial_balance', 5000) else 'negative'}">{final_balance:.2f} EUR</div>
-                    <small>MT5 en tiempo real</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>💎 Equity</h3>
-                    <div class="value {'positive' if account_info['equity'] >= account_info['balance'] else 'negative'}">{account_info['equity']:.2f} EUR</div>
-                    <small>Incluye posiciones</small>
-                </div>
-                
-                <div class="stat-card">
-                    <h3>🔥 Profit Factor</h3>
-                    <div class="value {'positive' if stats['profit_factor'] > 1 else 'negative'}">{stats['profit_factor']:.2f}</div>
-                    <small>Ganancia/Pérdida</small>
-                </div>
-            </div>
-            
-            <!-- Estadísticas de Señales Rechazadas -->
-            <div class="section">
-                <h2>🚫 Análisis de Señales Rechazadas</h2>
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <h3>🚫 Total Rechazadas</h3>
-                        <div class="value negative">{rejection_stats['total_rejections']}</div>
-                        <small>Últimas 24h</small>
-                    </div>
-                    
-                    <div class="stat-card">
-                        <h3>📊 Por Símbolo</h3>
-                        <div class="rejection-breakdown">
-                            {''.join([f'<div class="rejection-item"><span>{symbol}</span><span class="count">{count}</span></div>' 
-                                     for symbol, count in list(rejection_stats['by_symbol'].items())[:3]])}
-                        </div>
-                        <small>Top 3 símbolos</small>
-                    </div>
-                    
-                    <div class="stat-card">
-                        <h3>🔍 Por Categoría</h3>
-                        <div class="rejection-breakdown">
-                            {''.join([f'<div class="rejection-item"><span>{category.replace("_", " ")}</span><span class="count">{count}</span></div>' 
-                                     for category, count in list(rejection_stats['by_category'].items())[:3]])}
-                        </div>
-                        <small>Top 3 razones</small>
-                    </div>
-                    
-                    <div class="stat-card">
-                        <h3>⚙️ Por Estrategia</h3>
-                        <div class="rejection-breakdown">
-                            {''.join([f'<div class="rejection-item"><span>{strategy}</span><span class="count">{count}</span></div>' 
-                                     for strategy, count in list(rejection_stats['by_strategy'].items())[:3]])}
-                        </div>
-                        <small>Top 3 estrategias</small>
-                    </div>
-                </div>
-                
-                <!-- Tabla de Rechazos Recientes -->
-                <div class="table-container">
-                    <h3>📋 Rechazos Recientes</h3>
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>Hora</th>
-                                <th>Símbolo</th>
-                                <th>Estrategia</th>
-                                <th>Razón del Rechazo</th>
-                                <th>Categoría</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {''.join([f'''
-                            <tr>
-                                <td>{datetime.fromisoformat(rejection['timestamp'].replace('Z', '+00:00')).strftime('%H:%M:%S')}</td>
-                                <td><span class="symbol">{rejection['symbol']}</span></td>
-                                <td>{rejection['strategy']}</td>
-                                <td class="rejection-reason">{rejection['rejection_reason'][:50]}{'...' if len(rejection['rejection_reason']) > 50 else ''}</td>
-                                <td><span class="category-tag">{rejection['rejection_category'].replace('_', ' ')}</span></td>
-                            </tr>
-                            ''' for rejection in rejection_stats['recent_rejections'][:10]])}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            
-            <div class="charts-container">
-                <div class="chart-section">
-                    {equity_chart}
-                </div>
-            </div>
-            
-            <div class="positions-table">
-                <h3>📊 Posiciones Abiertas ({len(positions)})</h3>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Ticket</th>
-                            <th>Par</th>
-                            <th>Tipo</th>
-                            <th>Volumen</th>
-                            <th>Precio</th>
-                            <th>SL</th>
-                            <th>TP</th>
-                            <th>P&L</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        """
+        fig.add_trace(go.Bar(
+            x=symbols,
+            y=cooldown_remaining,
+            marker_color=[self.colors['error'] if x > 0 else self.colors['success'] for x in cooldown_remaining],
+            text=[f"{x}s" for x in cooldown_remaining],
+            textposition='auto',
+            textfont=dict(color=self.colors['text_primary'])
+        ))
         
-        # Añadir posiciones abiertas
-        if positions:
-            for pos in positions:
-                pnl_class = "positive" if pos['profit'] > 0 else "negative" if pos['profit'] < 0 else "neutral"
-                html_content += f"""
-                        <tr>
-                            <td>{pos['ticket']}</td>
-                            <td><strong>{pos['symbol']}</strong></td>
-                            <td>{pos['type']}</td>
-                            <td>{pos['volume']}</td>
-                            <td>{pos['price_open']:.5f}</td>
-                            <td>{f"{pos['sl']:.5f}" if pos['sl'] > 0 else '-'}</td>
-                            <td>{f"{pos['tp']:.5f}" if pos['tp'] > 0 else '-'}</td>
-                            <td class="{pnl_class}">{pos['profit']:.2f} EUR</td>
-                        </tr>
-                """
-        else:
-            html_content += """
-                        <tr>
-                            <td colspan="8" style="text-align: center; color: rgba(255,255,255,0.6);">
-                                No hay posiciones abiertas en esta sesión
-                            </td>
-                        </tr>
-            """
+        fig.update_layout(
+            title=dict(
+                text="Estado de Cooldowns por Símbolo",
+                font=dict(color=self.colors['text_primary'], size=16)
+            ),
+            xaxis=dict(
+                title="Símbolo",
+                color=self.colors['text_primary'],
+                gridcolor=self.colors['border']
+            ),
+            yaxis=dict(
+                title="Cooldown Restante (segundos)",
+                color=self.colors['text_primary'],
+                gridcolor=self.colors['border']
+            ),
+            paper_bgcolor=self.colors['surface'],
+            plot_bgcolor=self.colors['surface'],
+            font=dict(color=self.colors['text_primary']),
+            height=300
+        )
         
-        html_content += f"""
-                    </tbody>
-                </table>
-            </div>
-            
-            <div class="footer">
-                <p>🤖 Bot MT5 Trading System - Dashboard Live (Sesión: {uptime_info['session_id']})</p>
-                <p>Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</p>
-                <p>Datos reales desde MT5 • Sesión iniciada: {uptime_info['start_time'].strftime('%d/%m/%Y %H:%M:%S')}</p>
-                <p>Balance inicial: {stats.get('initial_balance', 5000):.2f} EUR • Auto-refresh cada 5 minutos</p>
-            </div>
-        </body>
-        </html>
-        """
-        
-        return html_content
+        return fig
     
-    def update_dashboard(self):
-        """Actualizar dashboard con datos frescos de la sesión actual"""
+    def update_enhanced_dashboard(self):
+        """Actualizar dashboard con todas las funcionalidades"""
         try:
-            # Actualizar estadísticas de la sesión antes de generar HTML
-            self.update_session_stats()
+            # Obtener datos
+            mt5_data = self.get_mt5_data()
+            cooldown_data = self.get_cooldown_data()
             
-            html_content = self.generate_dashboard_html()
+            # Obtener señales de la base de datos
+            conn = sqlite3.connect(self.db_path)
+            signals_df = pd.read_sql_query('''
+                SELECT * FROM enhanced_signals 
+                WHERE session_id = ? 
+                ORDER BY timestamp DESC
+            ''', conn, params=(self.session_id,))
+            conn.close()
             
+            # Crear gráficos
+            confidence_chart = self.create_confidence_chart(signals_df)
+            cooldown_chart = self.create_cooldown_chart(cooldown_data)
+            
+            # Crear gráfico de equity con tema oscuro
+            equity_fig = go.Figure()
+            equity_fig.add_trace(go.Scatter(
+                x=[datetime.now()],
+                y=[mt5_data['equity']],
+                mode='markers+lines',
+                name='Equity',
+                line=dict(color=self.colors['success']),
+                marker=dict(color=self.colors['primary'])
+            ))
+            equity_fig.update_layout(
+                title=dict(
+                    text="Curva de Equity",
+                    font=dict(color=self.colors['text_primary'], size=16)
+                ),
+                xaxis=dict(
+                    title="Tiempo",
+                    color=self.colors['text_primary'],
+                    gridcolor=self.colors['border']
+                ),
+                yaxis=dict(
+                    title="Equity (EUR)",
+                    color=self.colors['text_primary'],
+                    gridcolor=self.colors['border']
+                ),
+                paper_bgcolor=self.colors['surface'],
+                plot_bgcolor=self.colors['surface'],
+                font=dict(color=self.colors['text_primary']),
+                height=300
+            )
+            
+            # Generar HTML con tema oscuro integrado
+            html_content = f"""
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Dashboard MT5 Bot - Sistema Inteligente Oscuro</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        
+        body {{
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: {self.colors['background']};
+            color: {self.colors['text_primary']};
+            line-height: 1.6;
+        }}
+        
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        
+        .header {{
+            background: linear-gradient(135deg, {self.colors['surface']} 0%, {self.colors['surface_light']} 100%);
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 1px solid {self.colors['border']};
+            text-align: center;
+        }}
+        
+        .header h1 {{
+            font-size: 2.5em;
+            font-weight: 300;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, {self.colors['primary']} 0%, {self.colors['accent']} 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }}
+        
+        .header p {{
+            color: {self.colors['text_secondary']};
+            font-size: 1.1em;
+            margin-bottom: 15px;
+        }}
+        
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }}
+        
+        .stat-card {{
+            background: {self.colors['surface']};
+            border: 1px solid {self.colors['border']};
+            border-radius: 12px;
+            padding: 25px;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }}
+        
+        .stat-card:hover {{
+            transform: translateY(-2px);
+            border-color: {self.colors['primary']};
+            box-shadow: 0 8px 25px rgba(88, 166, 255, 0.15);
+        }}
+        
+        .stat-card::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, {self.colors['primary']}, {self.colors['accent']});
+        }}
+        
+        .stat-label {{
+            color: {self.colors['text_secondary']};
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }}
+        
+        .stat-value {{
+            font-size: 2.2em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }}
+        
+        .stat-change {{
+            font-size: 0.85em;
+            opacity: 0.8;
+        }}
+        
+        .positive {{ color: {self.colors['success']}; }}
+        .negative {{ color: {self.colors['error']}; }}
+        .neutral {{ color: {self.colors['warning']}; }}
+        
+        .charts-section {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }}
+        
+        .chart-container {{
+            background: {self.colors['surface']};
+            border: 1px solid {self.colors['border']};
+            border-radius: 12px;
+            padding: 20px;
+            overflow: hidden;
+        }}
+        
+        .cooldown-info {{
+            background: {self.colors['surface']};
+            border: 1px solid {self.colors['border']};
+            border-left: 4px solid {self.colors['primary']};
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }}
+        
+        .cooldown-info h3 {{
+            color: {self.colors['primary']};
+            margin-bottom: 15px;
+        }}
+        
+        .footer {{
+            background: {self.colors['surface']};
+            border: 1px solid {self.colors['border']};
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            color: {self.colors['text_secondary']};
+        }}
+        
+        .status-indicator {{
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }}
+        
+        .status-active {{ background-color: {self.colors['success']}; }}
+        .status-inactive {{ background-color: {self.colors['error']}; }}
+        
+        @media (max-width: 768px) {{
+            .container {{ padding: 10px; }}
+            .stats-grid {{ grid-template-columns: 1fr; }}
+            .charts-section {{ grid-template-columns: 1fr; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Dashboard MT5 Bot</h1>
+            <p>Sistema Inteligente con Scoring Flexible y Tema Oscuro</p>
+            <p>Sesión: {self.session_id} | Actualizado: {datetime.now().strftime('%H:%M:%S')}</p>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Balance</div>
+                <div class="stat-value positive">{mt5_data['balance']:.2f} €</div>
+                <div class="stat-change">
+                    <span class="status-indicator {'status-active' if mt5_data['connected'] else 'status-inactive'}"></span>
+                    {'Conectado' if mt5_data['connected'] else 'Desconectado'}
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-label">Equity</div>
+                <div class="stat-value {'positive' if mt5_data['equity'] >= mt5_data['balance'] else 'negative'}">{mt5_data['equity']:.2f} €</div>
+                <div class="stat-change">Margen libre: {mt5_data['free_margin']:.2f} €</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-label">Posiciones Abiertas</div>
+                <div class="stat-value neutral">{len(mt5_data['positions'])}</div>
+                <div class="stat-change">Señales sesión: {len(signals_df)}</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-label">Sistema Cooldown</div>
+                <div class="stat-value">
+                    <span class="status-indicator {'status-active' if cooldown_data['cooldown_manager_available'] else 'status-inactive'}"></span>
+                    {'Activo' if cooldown_data['cooldown_manager_available'] else 'Inactivo'}
+                </div>
+                <div class="stat-change">Filtros inteligentes</div>
+            </div>
+        </div>
+        
+        <div class="cooldown-info">
+            <h3>🔄 Estado del Sistema de Cooldowns</h3>
+            <p><strong>Filtro de Duplicados:</strong> {'✅ Activo' if cooldown_data['duplicate_filter_available'] else '❌ No disponible'}</p>
+            <p><strong>Gestor de Cooldowns:</strong> {'✅ Activo' if cooldown_data['cooldown_manager_available'] else '❌ No disponible'}</p>
+            <p><strong>Configuración XAUUSD:</strong> Ultra-selectivo (20min cooldown, 30min por dirección)</p>
+            <p><strong>Última actualización:</strong> {datetime.now().strftime('%H:%M:%S')}</p>
+        </div>
+        
+        <div class="charts-section">
+            <div class="chart-container">
+                <div id="confidence-chart"></div>
+            </div>
+            <div class="chart-container">
+                <div id="cooldown-chart"></div>
+            </div>
+            <div class="chart-container">
+                <div id="equity-chart"></div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>🚀 Bot MT5 con Sistema Inteligente de Señales | Actualización automática cada 5 minutos</p>
+            <p>Sesión iniciada: {self.bot_start_time.strftime('%Y-%m-%d %H:%M:%S')} | Uptime: {str(datetime.now() - self.bot_start_time).split('.')[0]}</p>
+        </div>
+    </div>
+    
+    <script>
+        // Configuración de Plotly para tema oscuro
+        const plotlyConfig = {{
+            displayModeBar: false,
+            responsive: true
+        }};
+        
+        // Gráfico de confianza
+        var confidenceData = {confidence_chart.to_json()};
+        Plotly.newPlot('confidence-chart', confidenceData.data, confidenceData.layout, plotlyConfig);
+        
+        // Gráfico de cooldowns
+        var cooldownData = {cooldown_chart.to_json()};
+        Plotly.newPlot('cooldown-chart', cooldownData.data, cooldownData.layout, plotlyConfig);
+        
+        // Gráfico de equity
+        var equityData = {equity_fig.to_json()};
+        Plotly.newPlot('equity-chart', equityData.data, equityData.layout, plotlyConfig);
+        
+        // Auto-refresh cada 5 minutos
+        setTimeout(function() {{
+            location.reload();
+        }}, 300000);
+        
+        // Botón de refresh manual
+        document.addEventListener('DOMContentLoaded', function() {{
+            const refreshBtn = document.createElement('button');
+            refreshBtn.innerHTML = '🔄 Actualizar';
+            refreshBtn.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: {self.colors['primary']};
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                cursor: pointer;
+                z-index: 1000;
+                font-size: 14px;
+            `;
+            refreshBtn.onclick = function() {{
+                location.reload();
+            }};
+            document.body.appendChild(refreshBtn);
+        }});
+    </script>
+</body>
+</html>
+"""
+            
+            # Escribir archivo HTML
             with open(self.dashboard_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
             
-            dashboard_logger.log(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Dashboard actualizado: {self.dashboard_path} (Sesión: {self.session_id})")
+            dashboard_logger.log(f"📊 Dashboard inteligente actualizado: {self.dashboard_path}")
             
         except Exception as e:
-            dashboard_logger.log(f"Error actualizando dashboard: {e}")
+            dashboard_logger.log(f"❌ Error actualizando dashboard: {e}")
     
-    def update_bot_stats(self, scans_increment: int = 1, signals_increment: int = 0):
-        """Actualizar estadísticas del bot para la sesión actual"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
+    def setup_flask_app(self):
+        """Configurar aplicación Flask para servidor web"""
+        if not FLASK_AVAILABLE:
+            dashboard_logger.log("❌ Flask no disponible - servidor web deshabilitado")
+            return None
+        
+        app = Flask(__name__)
+        app.config['SECRET_KEY'] = 'dashboard-mt5-bot'
+        
+        @app.route('/')
+        def dashboard_home():
+            """Página principal del dashboard"""
+            try:
+                # Leer el HTML generado
+                if os.path.exists(self.dashboard_path):
+                    with open(self.dashboard_path, 'r', encoding='utf-8') as f:
+                        html_content = f.read()
+                    return html_content
+                else:
+                    return """
+                    <html>
+                    <head><title>Dashboard MT5 Bot</title></head>
+                    <body style="background: #0d1117; color: #f0f6fc; font-family: Arial;">
+                        <h1>🤖 Dashboard MT5 Bot</h1>
+                        <p>⏳ Dashboard inicializándose...</p>
+                        <p>Actualiza la página en unos segundos.</p>
+                    </body>
+                    </html>
+                    """
+            except Exception as e:
+                return f"""
+                <html>
+                <head><title>Error - Dashboard MT5</title></head>
+                <body style="background: #0d1117; color: #f85149; font-family: Arial;">
+                    <h1>❌ Error en Dashboard</h1>
+                    <p>Error: {e}</p>
+                </body>
+                </html>
+                """
+        
+        @app.route('/api/status')
+        def api_status():
+            """API endpoint para estado del bot"""
+            try:
+                mt5_data = self.get_mt5_data()
+                return jsonify({
+                    'status': 'running',
+                    'session_id': self.session_id,
+                    'uptime': str(datetime.now() - self.bot_start_time).split('.')[0],
+                    'balance': mt5_data.get('balance', 0),
+                    'equity': mt5_data.get('equity', 0),
+                    'positions': len(mt5_data.get('positions', [])),
+                    'last_update': datetime.now().isoformat()
+                })
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+        
+        @app.route('/api/refresh')
+        def api_refresh():
+            """API endpoint para forzar actualización"""
+            try:
+                self.update_enhanced_dashboard()
+                return jsonify({'status': 'refreshed', 'timestamp': datetime.now().isoformat()})
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+        
+        return app
+    
+    def start_web_server(self):
+        """Iniciar servidor web Flask"""
+        if not FLASK_AVAILABLE:
+            dashboard_logger.log("⚠️ Flask no disponible - usando solo archivo HTML")
+            return False
         
         try:
-            c.execute('''
-                UPDATE session_stats 
-                SET total_scans = total_scans + ?, 
-                    total_signals_generated = total_signals_generated + ?,
-                    last_update = ?
-                WHERE session_id = ?
-            ''', (scans_increment, signals_increment, datetime.now().isoformat(), self.session_id))
+            self.flask_app = self.setup_flask_app()
+            if not self.flask_app:
+                return False
             
-            conn.commit()
+            def run_server():
+                try:
+                    self.flask_app.run(
+                        host='0.0.0.0',  # Permitir acceso desde red local
+                        port=self.web_server_port,
+                        debug=False,
+                        use_reloader=False,
+                        threaded=True
+                    )
+                except Exception as e:
+                    dashboard_logger.log(f"❌ Error en servidor web: {e}")
             
-            if signals_increment > 0:
-                dashboard_logger.log(f"[{datetime.now().strftime('%H:%M:%S')}] 📈 Stats actualizadas: +{scans_increment} scans, +{signals_increment} señales")
+            self.web_server_thread = threading.Thread(target=run_server, daemon=True)
+            self.web_server_thread.start()
+            
+            # Esperar un momento para que el servidor inicie
+            time.sleep(2)
+            
+            dashboard_logger.log(f"🌐 Servidor web iniciado en http://localhost:{self.web_server_port}")
+            dashboard_logger.log(f"📱 Acceso móvil: http://192.168.1.64:{self.web_server_port}")
+            
+            return True
             
         except Exception as e:
-            dashboard_logger.log(f"Error actualizando stats del bot: {e}")
-        finally:
-            conn.close()
+            dashboard_logger.log(f"❌ Error iniciando servidor web: {e}")
+            return False
+    
+    def stop_web_server(self):
+        """Detener servidor web"""
+        if self.web_server_thread and self.web_server_thread.is_alive():
+            dashboard_logger.log("⏹️ Deteniendo servidor web...")
+            # Flask no tiene un método clean shutdown, pero el thread daemon se cerrará automáticamente
+    
+    def update_bot_stats(self, scans: int = 1, signals: int = 0):
+        """Actualizar estadísticas del bot"""
+        self.bot_stats['scans'] += scans
+        self.bot_stats['signals'] += signals
+        self.bot_stats['last_update'] = datetime.now()
+    
+    def auto_update_loop(self):
+        """Loop de actualización automática"""
+        while self.is_running:
+            try:
+                self.update_enhanced_dashboard()
+                time.sleep(self.update_interval)
+            except Exception as e:
+                dashboard_logger.log(f"❌ Error en loop de actualización: {e}")
+                time.sleep(60)  # Esperar 1 minuto antes de reintentar
     
     def start_auto_update(self):
-        """Iniciar actualización automática en hilo separado"""
+        """Iniciar actualización automática + servidor web"""
         if self.is_running:
             return
         
         self.is_running = True
         
-        def update_loop():
-            while self.is_running:
-                self.update_dashboard()
-                time.sleep(self.update_interval)
+        # Iniciar servidor web
+        web_server_started = self.start_web_server()
         
-        self.update_thread = threading.Thread(target=update_loop, daemon=True)
+        # Iniciar thread de actualización
+        self.update_thread = threading.Thread(target=self.auto_update_loop, daemon=True)
         self.update_thread.start()
         
-        dashboard_logger.log(f"🚀 Dashboard live iniciado - Actualización cada {self.update_interval//60} minutos")
+        # Actualización inicial
+        self.update_enhanced_dashboard()
+        
+        if web_server_started:
+            dashboard_logger.log(f"🚀 Dashboard completo iniciado - Servidor web + archivo HTML")
+            dashboard_logger.log(f"🌐 Acceso web: http://localhost:5000")
+        else:
+            dashboard_logger.log(f"🚀 Dashboard iniciado - Solo archivo HTML")
+        
         dashboard_logger.log(f"📁 Archivo: {os.path.abspath(self.dashboard_path)}")
-        dashboard_logger.log(f"🔄 Sesión: {self.session_id} - Datos reales desde cero")
+        dashboard_logger.log(f"🔄 Sesión: {self.session_id} - Sistema de confianza integrado")
     
     def stop_auto_update(self):
-        """Detener actualización automática"""
+        """Detener actualización automática + servidor web"""
         self.is_running = False
+        
+        # Detener servidor web
+        self.stop_web_server()
+        
+        # Detener thread de actualización
         if self.update_thread:
             self.update_thread.join(timeout=1)
-        dashboard_logger.log(f"⏹️ Dashboard live detenido - Sesión: {self.session_id}")
+        
+        dashboard_logger.log(f"⏹️ Dashboard completo detenido - Sesión: {self.session_id}")
     
-    def get_combined_historical_data(self, days: int = 30) -> Dict[str, Any]:
-        """Combinar datos de la sesión actual con datos históricos de backtesting"""
+    def start_web_server(self):
+        """Iniciar servidor web simple para servir el HTML existente"""
+        if not FLASK_AVAILABLE:
+            dashboard_logger.log("⚠️ Flask no disponible - solo archivo HTML")
+            return False
+        
         try:
-            # Obtener datos de la sesión actual
-            session_trades = self.get_session_trades()
-            session_stats = self.calculate_statistics(session_trades)
+            app = Flask(__name__)
             
-            # Intentar obtener datos históricos del sistema de backtesting
-            historical_data = {}
-            try:
-                from backtest_tracker import backtest_tracker
-                historical_stats = backtest_tracker.get_statistics(days)
-                historical_data = {
-                    'historical_trades': historical_stats.get('total_signals', 0),
-                    'historical_win_rate': historical_stats.get('win_rate', 0),
-                    'historical_pnl': historical_stats.get('total_pnl', 0),
-                    'historical_available': True
-                }
-            except Exception:
-                historical_data = {'historical_available': False}
+            @app.route('/')
+            def dashboard():
+                """Servir el archivo HTML del dashboard"""
+                if os.path.exists(self.dashboard_path):
+                    return send_file(self.dashboard_path)
+                else:
+                    return "<h1>Dashboard inicializándose...</h1><p>Actualiza en unos segundos</p>"
             
-            return {
-                'session_data': session_stats,
-                'historical_data': historical_data,
-                'combined_available': historical_data.get('historical_available', False)
-            }
+            def run_server():
+                app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
+            
+            server_thread = threading.Thread(target=run_server, daemon=True)
+            server_thread.start()
+            
+            time.sleep(1)  # Esperar que inicie
+            dashboard_logger.log("🌐 Servidor web iniciado en http://localhost:5000")
+            return True
             
         except Exception as e:
-            dashboard_logger.log(f"Error obteniendo datos combinados: {e}")
-            return {'session_data': {}, 'historical_data': {}, 'combined_available': False}
+            dashboard_logger.log(f"❌ Error servidor web: {e}")
+            return False
 
-# Instancia global
-live_dashboard = LiveDashboard()
+# Instancias globales
+live_dashboard = ConsolidatedLiveDashboard()
+enhanced_dashboard = live_dashboard  # Alias para compatibilidad
 
+# Funciones de compatibilidad con bot.py
 def start_live_dashboard():
     """Iniciar dashboard live (llamar desde bot.py)"""
     live_dashboard.start_auto_update()
@@ -1323,7 +1053,19 @@ def update_dashboard_stats(scans: int = 1, signals: int = 0):
     """Actualizar stats desde el bot"""
     live_dashboard.update_bot_stats(scans, signals)
 
+def start_enhanced_dashboard():
+    """Iniciar dashboard inteligente (llamar desde bot.py)"""
+    live_dashboard.start_auto_update()
+
+def stop_enhanced_dashboard():
+    """Detener dashboard inteligente"""
+    live_dashboard.stop_auto_update()
+
+def add_signal_to_enhanced_dashboard(signal_data: Dict):
+    """Añadir señal con confianza al dashboard (llamar desde bot.py)"""
+    live_dashboard.add_signal_with_confidence(signal_data)
+
 if __name__ == "__main__":
-    # Test del dashboard live
-    live_dashboard.update_dashboard()
-    dashboard_logger.log("Dashboard generado para testing")
+    # Test del dashboard consolidado
+    live_dashboard.update_enhanced_dashboard()
+    dashboard_logger.log("Dashboard consolidado generado para testing")

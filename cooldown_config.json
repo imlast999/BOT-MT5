@@ -1,0 +1,127 @@
+{
+  "description": "Configuración de cooldowns inteligentes para señales",
+  "version": "2.0",
+  "last_updated": "2026-01-31",
+  
+  "symbol_cooldowns": {
+    "EURUSD": {
+      "general": 600,
+      "description": "10 minutos cooldown general para EURUSD"
+    },
+    "XAUUSD": {
+      "general": 1200,
+      "description": "20 minutos cooldown general para XAUUSD - MÁS SELECTIVO"
+    },
+    "BTCEUR": {
+      "general": 600,
+      "description": "10 minutos cooldown general para BTCEUR"
+    }
+  },
+  
+  "direction_cooldowns": {
+    "EURUSD": {
+      "BUY": 900,
+      "SELL": 900,
+      "description": "15 minutos por dirección para EURUSD"
+    },
+    "XAUUSD": {
+      "BUY": 1800,
+      "SELL": 1800,
+      "description": "30 minutos por dirección para XAUUSD - ULTRA SELECTIVO"
+    },
+    "BTCEUR": {
+      "BUY": 900,
+      "SELL": 900,
+      "description": "15 minutos por dirección para BTCEUR"
+    }
+  },
+  
+  "zone_tolerances": {
+    "EURUSD": {
+      "tolerance": 0.0020,
+      "unit": "price_points",
+      "description": "20 pips tolerance for same zone"
+    },
+    "XAUUSD": {
+      "tolerance": 15.0,
+      "unit": "points",
+      "description": "15 points tolerance for same zone"
+    },
+    "BTCEUR": {
+      "tolerance": 500.0,
+      "unit": "points", 
+      "description": "500 points tolerance for same zone"
+    }
+  },
+  
+  "price_movement_requirements": {
+    "EURUSD": {
+      "minimum_pips": 10,
+      "description": "Minimum 10 pips movement required"
+    },
+    "XAUUSD": {
+      "minimum_points": 30,
+      "description": "Minimum 30 points movement required - MÁS SELECTIVO"
+    },
+    "BTCEUR": {
+      "minimum_points": 300,
+      "description": "Minimum 300 points movement required"
+    }
+  },
+  
+  "session_filters": {
+    "XAUUSD": {
+      "allowed_sessions": ["LONDON_NY_OVERLAP"],
+      "overlap_hours": [13, 14, 15, 16, 17],
+      "description": "XAUUSD solo opera en overlap Londres-NY (13-17 GMT)"
+    },
+    "EURUSD": {
+      "allowed_sessions": ["LONDON", "NY", "OVERLAP"],
+      "description": "EURUSD opera en sesiones principales"
+    },
+    "BTCEUR": {
+      "allowed_sessions": ["ALL"],
+      "description": "BTCEUR opera 24/7"
+    }
+  },
+  
+  "confidence_requirements": {
+    "XAUUSD": {
+      "minimum_show": "MEDIUM-HIGH",
+      "minimum_execute": "HIGH",
+      "description": "XAUUSD requiere alta confianza para mostrar/ejecutar"
+    },
+    "EURUSD": {
+      "minimum_show": "MEDIUM",
+      "minimum_execute": "HIGH",
+      "description": "EURUSD más flexible para mostrar"
+    },
+    "BTCEUR": {
+      "minimum_show": "MEDIUM",
+      "minimum_execute": "HIGH", 
+      "description": "BTCEUR más flexible para mostrar"
+    }
+  },
+  
+  "anti_spam_rules": {
+    "max_signals_per_hour": {
+      "EURUSD": 4,
+      "XAUUSD": 2,
+      "BTCEUR": 4
+    },
+    "max_signals_per_day": {
+      "EURUSD": 20,
+      "XAUUSD": 10,
+      "BTCEUR": 20
+    },
+    "description": "Límites máximos para evitar spam"
+  },
+  
+  "logging_config": {
+    "log_blocked_signals": true,
+    "log_cooldown_status": true,
+    "log_zone_analysis": true,
+    "verbose_duplicate_reasons": true,
+    "description": "Configuración de logging para debugging"
+  }
+}

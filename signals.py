@@ -2,6 +2,9 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
 import logging
+from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass
+from collections import defaultdict
 
 # Configurar logger primero
 logger = logging.getLogger(__name__)
@@ -16,6 +19,157 @@ except ImportError as e:
     ADVANCED_SYSTEMS_AVAILABLE = False
 
 SYMBOL = "EURUSD"
+
+# ======================
+# SISTEMA DE SCORING FLEXIBLE INTEGRADO
+# ======================
+
+@dataclass
+class ConfirmationRule:
+    """Regla de confirmación con peso y descripción"""
+    name: str
+    weight: float = 1.0
+    description: str = ""
+    critical: bool = False
+
+@dataclass
+class ScoringResult:
+    """Resultado del sistema de scoring"""
+    setup_valid: bool
+    confirmations_passed: int
+    confirmations_total: int
+    final_score: float
+    confidence_level: str
+    should_show: bool
+    details: Dict
+    failed_confirmations: List[str]
+
+class FlexibleScoring:
+    """Sistema de scoring flexible integrado en signals.py"""
+    
+    def __init__(self):
+        # Thresholds por símbolo
+        self.symbol_config = {
+            'EURUSD': {'min_score': 0.60, 'show_threshold': 0.50, 'setup_weight': 0.4},
+            'XAUUSD': {'min_score': 0.65, 'show_threshold': 0.60, 'setup_weight': 0.5},
+            'BTCEUR': {'min_score': 0.55, 'show_threshold': 0.45, 'setup_weight': 0.4}
+        }
+        
+        # Contadores internos para logging inteligente
+        self.stats = defaultdict(int)
+        self.rejection_reasons = defaultdict(int)
+        self.failed_rules = defaultdict(int)
+        self.last_dump = datetime.now()
+    
+    def evaluate_signal(self, symbol: str, setup_valid: bool, 
+                       confirmations: List[Tuple[bool, ConfirmationRule]]) -> ScoringResult:
+        """Evalúa una señal usando scoring flexible"""
+        
+        config = self.symbol_config.get(symbol, self.symbol_config['EURUSD'])
+        
+        # Actualizar estadísticas internas
+        self.stats['signals_evaluated'] += 1
+        
+        if not setup_valid:
+            self.stats['signals_rejected'] += 1
+            self.rejection_reasons['setup_invalid'] += 1
+            return ScoringResult(
+                setup_valid=False, confirmations_passed=0, confirmations_total=len(confirmations),
+                final_score=0.0, confidence_level='NONE', should_show=False,
+                details={'reason': 'Setup principal no válido'}, failed_confirmations=['SETUP_INVALID']
+            )
+        
+        # Evaluar confirmaciones
+        passed_confirmations = []
+        failed_confirmations = []
+        total_weight = sum(rule.weight for _, rule in confirmations)
+        passed_weight = sum(rule.weight for result, rule in confirmations if result)
+        
+        for result, rule in confirmations:
+            if result:
+                passed_confirmations.append(rule.name)
+            else:
+                failed_confirmations.append(rule.name)
+                self.failed_rules[rule.name] += 1
+        
+        # Score ponderado
+        weighted_score = passed_weight / total_weight if total_weight > 0 else 0.0
+        
+        # Score final (setup + confirmaciones)
+        setup_weight = config.get('setup_weight', 0.5)
+        final_score = (setup_weight * 1.0) + ((1 - setup_weight) * weighted_score)
+        
+        # Determinar confianza
+        if final_score >= 0.75:
+            confidence = 'HIGH'
+        elif final_score >= 0.65:
+            confidence = 'MEDIUM-HIGH'
+        elif final_score >= 0.50:
+            confidence = 'MEDIUM'
+        else:
+            confidence = 'LOW'
+        
+        # Determinar si mostrar
+        show_threshold = config.get('show_threshold', 0.50)
+        should_show = final_score >= show_threshold
+        
+        if should_show:
+            self.stats['signals_shown'] += 1
+        else:
+            self.stats['signals_rejected'] += 1
+            self.rejection_reasons['score_insufficient'] += 1
+        
+        # Volcado periódico de estadísticas (cada 15 minutos)
+        if (datetime.now() - self.last_dump).total_seconds() > 900:  # 15 minutos
+            self._dump_stats()
+        
+        return ScoringResult(
+            setup_valid=setup_valid,
+            confirmations_passed=len(passed_confirmations),
+            confirmations_total=len(confirmations),
+            final_score=final_score,
+            confidence_level=confidence,
+            should_show=should_show,
+            details={
+                'symbol': symbol,
+                'passed_confirmations': passed_confirmations,
+                'failed_confirmations': failed_confirmations,
+                'weighted_score': weighted_score,
+                'show_threshold': show_threshold
+            },
+            failed_confirmations=failed_confirmations
+        )
+    
+    def _dump_stats(self):
+        """Volcado inteligente de estadísticas agregadas"""
+        duration = (datetime.now() - self.last_dump).total_seconds() / 60
+        
+        # Log solo resumen importante
+        if self.stats['signals_evaluated'] > 0:
+            show_rate = (self.stats['signals_shown'] / self.stats['signals_evaluated']) * 100
+            logger.info(f"📊 RESUMEN {duration:.0f}min: {self.stats['signals_evaluated']} evaluadas, "
+                       f"{self.stats['signals_shown']} mostradas ({show_rate:.1f}%), "
+                       f"{self.stats['signals_rejected']} rechazadas")
+            
+            # Top 3 razones de rechazo
+            if self.rejection_reasons:
+                top_rejections = sorted(self.rejection_reasons.items(), key=lambda x: x[1], reverse=True)[:3]
+                rejection_summary = ", ".join([f"{reason}({count})" for reason, count in top_rejections])
+                logger.info(f"Top rechazos: {rejection_summary}")
+        
+        # Reset contadores
+        self.stats.clear()
+        self.rejection_reasons.clear()
+        self.failed_rules.clear()
+        self.last_dump = datetime.now()
+    
+    def create_confirmation_rule(self, name: str, weight: float = 1.0, 
+                               description: str = "", critical: bool = False) -> ConfirmationRule:
+        """Helper para crear reglas de confirmación"""
+        return ConfirmationRule(name=name, weight=weight, description=description, critical=critical)
+
+# Instancia global del sistema de scoring
+flexible_scoring = FlexibleScoring()
 
 # simple registry for pluggable rules
 RULES = {}
@@ -38,80 +192,116 @@ def register_rule(name: str):
 
 @register_rule('ema50_200')
 def _ema_strategy(df: pd.DataFrame, config: dict | None = None):
+    """Estrategia EMA mejorada con sistema de scoring flexible"""
     cfg = config or {}
-    expires_minutes = int(cfg.get('expires_minutes', 1))
-    span_fast = int(cfg.get('ema_fast', 50))
-    span_slow = int(cfg.get('ema_slow', 200))
-
     df = df.copy()
     
     # Verificar datos suficientes
     if len(df) < 200:
         return None, df
     
+    # Indicadores
+    span_fast = int(cfg.get('ema_fast', 50))
+    span_slow = int(cfg.get('ema_slow', 200))
     df[f'ema{span_fast}'] = df['close'].ewm(span=span_fast).mean()
     df[f'ema{span_slow}'] = df['close'].ewm(span=span_slow).mean()
     df['rsi'] = _rsi(df['close'], 14)
+    df['atr'] = _atr(df, 14)
 
-    last_fast = df[f'ema{span_fast}'].iloc[-1]
-    last_slow = df[f'ema{span_slow}'].iloc[-1]
-    price = float(df['close'].iloc[-1])
-    last_rsi = df['rsi'].iloc[-1]
+    last = df.iloc[-1]
+    price = float(last['close'])
+    atr_current = last['atr']
+    atr_mean = df['atr'].tail(20).mean()
     
-    # Filtros adicionales para evitar señales en retrocesos
-    # Verificar que el precio esté cerca de las EMAs (no muy alejado)
-    ema_distance = abs(price - last_fast) / price
-    if ema_distance > 0.002:  # Más del 0.2% de distancia = posible retroceso
+    # 🎯 SETUP PRINCIPAL: Cruce EMA (menos exigente)
+    ema_fast = last[f'ema{span_fast}']
+    ema_slow = last[f'ema{span_slow}']
+    
+    # Breakout de 15 períodos (más flexible)
+    df['high_15'] = df['high'].rolling(15).max()
+    df['low_15'] = df['low'].rolling(15).min()
+    
+    breakout_up = price > last['high_15'] and ema_fast > ema_slow
+    breakout_down = price < last['low_15'] and ema_fast < ema_slow
+    setup_valid = breakout_up or breakout_down
+    
+    if not setup_valid:
         return None, df
     
-    # Verificar momentum con RSI
-    if last_fast > last_slow and last_rsi > 45 and last_rsi < 75:  # Evitar sobrecompra
-        # Verificar que no sea un retroceso fuerte
+    # ✅ CONFIRMACIONES CON SCORING FLEXIBLE
+    confirmations = []
+    
+    # Confirmación 1: RSI en zona operativa (MÁS AMPLIO: 35-75)
+    rsi_ok = 35 <= last['rsi'] <= 75
+    confirmations.append((rsi_ok, flexible_scoring.create_confirmation_rule(
+        "RSI_OPERATIVE", 1.0, f"RSI operativo (35-75): {last['rsi']:.1f}"
+    )))
+    
+    # Confirmación 2: ATR por encima de media (volatilidad)
+    atr_high = atr_current > atr_mean * 0.9  # Menos exigente
+    confirmations.append((atr_high, flexible_scoring.create_confirmation_rule(
+        "ATR_HIGH", 0.8, f"ATR alto: {atr_current:.5f} vs {atr_mean:.5f}"
+    )))
+    
+    # Confirmación 3: No retroceso fuerte
+    if breakout_up:
         recent_high = df['high'].tail(10).max()
-        if price < recent_high * 0.998:  # Precio más del 0.2% por debajo del máximo reciente
-            return None, df  # Posible retroceso
-            
-        sig = {
-            'symbol': df.get('symbol', SYMBOL),
-            'type': 'BUY',
-            'entry': price,
-            'sl': price - float(cfg.get('sl_distance', 0.0020)),
-            'tp': price + float(cfg.get('tp_distance', 0.0040)),
-            'timeframe': None,
-            'explanation': f'Fallback: EMA{span_fast} > EMA{span_slow} + RSI {last_rsi:.1f} + Filtros',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes),
-            'confidence': 'MEDIUM'
-        }
-        logger.debug('EMA rule produced BUY signal: %s', sig)
-        return sig, df
-
-    if last_fast < last_slow and last_rsi < 55 and last_rsi > 25:  # Evitar sobreventa
-        # Verificar que no sea un retroceso fuerte
+        no_pullback = price >= recent_high * 0.998  # Tolerancia 0.2%
+        direction = 'BUY'
+    else:
         recent_low = df['low'].tail(10).min()
-        if price > recent_low * 1.002:  # Precio más del 0.2% por encima del mínimo reciente
-            return None, df  # Posible retroceso
-            
-        sig = {
-            'symbol': df.get('symbol', SYMBOL),
-            'type': 'SELL',
-            'entry': price,
-            'sl': price + float(cfg.get('sl_distance', 0.0020)),
-            'tp': price - float(cfg.get('tp_distance', 0.0040)),
-            'timeframe': None,
-            'explanation': f'Fallback: EMA{span_fast} < EMA{span_slow} + RSI {last_rsi:.1f} + Filtros',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes),
-            'confidence': 'MEDIUM'
-        }
-        logger.debug('EMA rule produced SELL signal: %s', sig)
-        return sig, df
-
-    return None, df
+        no_pullback = price <= recent_low * 1.002  # Tolerancia 0.2%
+        direction = 'SELL'
+    
+    confirmations.append((no_pullback, flexible_scoring.create_confirmation_rule(
+        "NO_PULLBACK", 0.6, f"Sin retroceso fuerte para {direction}"
+    )))
+    
+    # 🧮 EVALUACIÓN CON SCORING
+    symbol = df.get('symbol', SYMBOL)
+    scoring_result = flexible_scoring.evaluate_signal(symbol, setup_valid, confirmations)
+    
+    if not scoring_result.should_show:
+        return None, df
+    
+    # 📈 GENERAR SEÑAL
+    expires_minutes = int(cfg.get('expires_minutes', 30))
+    sl_distance = atr_current * 1.2  # Más conservador
+    tp_distance = sl_distance * 2.0  # R:R = 2.0
+    
+    if direction == 'BUY':
+        sl = price - sl_distance
+        tp = price + tp_distance
+    else:
+        sl = price + sl_distance
+        tp = price - tp_distance
+    
+    sig = {
+        'symbol': symbol,
+        'type': direction,
+        'entry': price,
+        'sl': sl,
+        'tp': tp,
+        'timeframe': cfg.get('timeframe', 'H1'),
+        'explanation': f'EMA Mejorado: {direction} + Score {scoring_result.final_score:.2f} + R:R {tp_distance/sl_distance:.1f}',
+        'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes),
+        'confidence': scoring_result.confidence_level,
+        'score': scoring_result.final_score,
+        'scoring_details': scoring_result.details
+    }
+    
+    # Log solo señales importantes (HIGH/MEDIUM-HIGH)
+    if scoring_result.confidence_level in ['HIGH', 'MEDIUM-HIGH']:
+        logger.info(f"🎯 {symbol} {direction} señal generada | Score: {scoring_result.final_score:.2f} | Confidence: {scoring_result.confidence_level}")
+    
+    return sig, df
 
     return None, df
 
 
 @register_rule('rsi')
 def _rsi_strategy(df: pd.DataFrame, config: dict | None = None):
+    """Estrategia RSI mejorada con sistema de scoring flexible"""
     cfg = config or {}
     period = int(cfg.get('period', 14))
     lower = float(cfg.get('lower', 30))
@@ -125,41 +315,94 @@ def _rsi_strategy(df: pd.DataFrame, config: dict | None = None):
     rs = up / down.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
     df['rsi'] = rsi
+    df['atr'] = _atr(df, 14)
 
     last = rsi.iloc[-1]
     price = float(df['close'].iloc[-1])
+    atr_current = df['atr'].iloc[-1]
+    
+    # 🎯 SETUP PRINCIPAL: RSI en zona extrema
+    setup_valid = last < lower or last > upper
+    
+    if not setup_valid:
+        return None, df
+    
+    # Determinar dirección
     if last < lower:
-        sig = {
-            'symbol': df.get('symbol', SYMBOL),
-            'type': 'BUY',
-            'entry': price,
-            'sl': price - float(cfg.get('sl_distance', 0.0025)),
-            'tp': price + float(cfg.get('tp_distance', 0.0050)),
-            'timeframe': None,
-            'explanation': f'RSI {last:.1f} < {lower}',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
-        }
-        logger.debug('RSI rule produced BUY signal: %s', sig)
-        return sig, df
-    if last > upper:
-        sig = {
-            'symbol': df.get('symbol', SYMBOL),
-            'type': 'SELL',
-            'entry': price,
-            'sl': price + float(cfg.get('sl_distance', 0.0025)),
-            'tp': price - float(cfg.get('tp_distance', 0.0050)),
-            'timeframe': None,
-            'explanation': f'RSI {last:.1f} > {upper}',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
-        }
-        logger.debug('RSI rule produced SELL signal: %s', sig)
-        return sig, df
-
-    return None, df
+        direction = 'BUY'
+        sl_distance = float(cfg.get('sl_distance', atr_current * 1.5))
+        tp_distance = float(cfg.get('tp_distance', atr_current * 2.0))
+    else:
+        direction = 'SELL'
+        sl_distance = float(cfg.get('sl_distance', atr_current * 1.5))
+        tp_distance = float(cfg.get('tp_distance', atr_current * 2.0))
+    
+    # ✅ CONFIRMACIONES CON SCORING FLEXIBLE
+    confirmations = []
+    
+    # Confirmación 1: RSI muy extremo (más confianza)
+    rsi_extreme = last < 25 or last > 75
+    confirmations.append((rsi_extreme, flexible_scoring.create_confirmation_rule(
+        "RSI_EXTREME", 1.2, f"RSI muy extremo: {last:.1f}"
+    )))
+    
+    # Confirmación 2: ATR adecuado (volatilidad)
+    atr_mean = df['atr'].tail(20).mean()
+    atr_ok = atr_current > atr_mean * 0.8
+    confirmations.append((atr_ok, flexible_scoring.create_confirmation_rule(
+        "ATR_ADEQUATE", 0.8, f"ATR adecuado: {atr_current:.5f}"
+    )))
+    
+    # Confirmación 3: Vela de reversión
+    last_candle = df.iloc[-1]
+    if direction == 'BUY':
+        reversal_candle = last_candle['close'] > last_candle['open']
+    else:
+        reversal_candle = last_candle['close'] < last_candle['open']
+    
+    confirmations.append((reversal_candle, flexible_scoring.create_confirmation_rule(
+        "REVERSAL_CANDLE", 0.6, f"Vela de reversión para {direction}"
+    )))
+    
+    # 🧮 EVALUACIÓN CON SCORING
+    symbol = df.get('symbol', SYMBOL)
+    scoring_result = flexible_scoring.evaluate_signal(symbol, setup_valid, confirmations)
+    
+    if not scoring_result.should_show:
+        return None, df
+    
+    # 📈 GENERAR SEÑAL
+    if direction == 'BUY':
+        sl = price - sl_distance
+        tp = price + tp_distance
+    else:
+        sl = price + sl_distance
+        tp = price - tp_distance
+    
+    sig = {
+        'symbol': symbol,
+        'type': direction,
+        'entry': price,
+        'sl': sl,
+        'tp': tp,
+        'timeframe': cfg.get('timeframe', 'H1'),
+        'explanation': f'RSI Mejorado: {direction} RSI {last:.1f} + Score {scoring_result.final_score:.2f}',
+        'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes),
+        'confidence': scoring_result.confidence_level,
+        'score': scoring_result.final_score,
+        'scoring_details': scoring_result.details
+    }
+    
+    # Log solo señales importantes
+    if scoring_result.confidence_level in ['HIGH', 'MEDIUM-HIGH']:
+        logger.info(f"🎯 {symbol} {direction} RSI señal generada | Score: {scoring_result.final_score:.2f} | Confidence: {scoring_result.confidence_level}")
+    
+    return sig, df
 
 
 @register_rule('macd')
 def _macd_strategy(df: pd.DataFrame, config: dict | None = None):
+    """Estrategia MACD mejorada con sistema de scoring flexible"""
     cfg = config or {}
     fast = int(cfg.get('fast', 12))
     slow = int(cfg.get('slow', 26))
@@ -175,38 +418,90 @@ def _macd_strategy(df: pd.DataFrame, config: dict | None = None):
     df['macd'] = macd
     df['macd_sig'] = sig
     df['macd_hist'] = hist
+    df['atr'] = _atr(df, 14)
 
-    # signal when histogram crosses zero
-    if hist.iloc[-2] < 0 and hist.iloc[-1] > 0:
-        price = float(df['close'].iloc[-1])
-        sigd = {
-            'symbol': df.get('symbol', SYMBOL),
-            'type': 'BUY',
-            'entry': price,
-            'sl': price - float(cfg.get('sl_distance', 0.0020)),
-            'tp': price + float(cfg.get('tp_distance', 0.0040)),
-            'timeframe': None,
-            'explanation': 'MACD histogram crossed above zero',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
-        }
-        logger.debug('MACD rule produced BUY signal: %s', sigd)
-        return sigd, df
-    if hist.iloc[-2] > 0 and hist.iloc[-1] < 0:
-        price = float(df['close'].iloc[-1])
-        sigd = {
-            'symbol': df.get('symbol', SYMBOL),
-            'type': 'SELL',
-            'entry': price,
-            'sl': price + float(cfg.get('sl_distance', 0.0020)),
-            'tp': price - float(cfg.get('tp_distance', 0.0040)),
-            'timeframe': None,
-            'explanation': 'MACD histogram crossed below zero',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
-        }
-        logger.debug('MACD rule produced SELL signal: %s', sigd)
-        return sigd, df
-
-    return None, df
+    # 🎯 SETUP PRINCIPAL: Cruce del histograma MACD
+    setup_valid = False
+    direction = None
+    
+    if len(hist) >= 2:
+        if hist.iloc[-2] < 0 and hist.iloc[-1] > 0:
+            setup_valid = True
+            direction = 'BUY'
+        elif hist.iloc[-2] > 0 and hist.iloc[-1] < 0:
+            setup_valid = True
+            direction = 'SELL'
+    
+    if not setup_valid:
+        return None, df
+    
+    price = float(df['close'].iloc[-1])
+    atr_current = df['atr'].iloc[-1]
+    
+    # ✅ CONFIRMACIONES CON SCORING FLEXIBLE
+    confirmations = []
+    
+    # Confirmación 1: Magnitud del histograma
+    hist_magnitude = abs(hist.iloc[-1])
+    hist_strong = hist_magnitude > abs(hist.tail(10).mean())
+    confirmations.append((hist_strong, flexible_scoring.create_confirmation_rule(
+        "HIST_MAGNITUDE", 1.0, f"Histograma fuerte: {hist_magnitude:.6f}"
+    )))
+    
+    # Confirmación 2: MACD por encima/debajo de cero
+    if direction == 'BUY':
+        macd_position_ok = macd.iloc[-1] > -abs(macd.tail(20).std())
+    else:
+        macd_position_ok = macd.iloc[-1] < abs(macd.tail(20).std())
+    
+    confirmations.append((macd_position_ok, flexible_scoring.create_confirmation_rule(
+        "MACD_POSITION", 0.8, f"MACD en posición favorable para {direction}"
+    )))
+    
+    # Confirmación 3: Volatilidad adecuada
+    atr_mean = df['atr'].tail(20).mean()
+    atr_ok = atr_current > atr_mean * 0.7
+    confirmations.append((atr_ok, flexible_scoring.create_confirmation_rule(
+        "ATR_ADEQUATE", 0.6, f"ATR adecuado: {atr_current:.5f}"
+    )))
+    
+    # 🧮 EVALUACIÓN CON SCORING
+    symbol = df.get('symbol', SYMBOL)
+    scoring_result = flexible_scoring.evaluate_signal(symbol, setup_valid, confirmations)
+    
+    if not scoring_result.should_show:
+        return None, df
+    
+    # 📈 GENERAR SEÑAL
+    sl_distance = float(cfg.get('sl_distance', atr_current * 1.5))
+    tp_distance = float(cfg.get('tp_distance', atr_current * 2.0))
+    
+    if direction == 'BUY':
+        sl = price - sl_distance
+        tp = price + tp_distance
+    else:
+        sl = price + sl_distance
+        tp = price - tp_distance
+    
+    sigd = {
+        'symbol': symbol,
+        'type': direction,
+        'entry': price,
+        'sl': sl,
+        'tp': tp,
+        'timeframe': cfg.get('timeframe', 'H1'),
+        'explanation': f'MACD Mejorado: {direction} histograma cruce + Score {scoring_result.final_score:.2f}',
+        'expires': datetime.now(timezone.utc) + timedelta(minutes=expires_minutes),
+        'confidence': scoring_result.confidence_level,
+        'score': scoring_result.final_score,
+        'scoring_details': scoring_result.details
+    }
+    
+    # Log solo señales importantes
+    if scoring_result.confidence_level in ['HIGH', 'MEDIUM-HIGH']:
+        logger.info(f"🎯 {symbol} {direction} MACD señal generada | Score: {scoring_result.final_score:.2f} | Confidence: {scoring_result.confidence_level}")
+    
+    return sigd, df
 
 
 def detect_signal_advanced(df: pd.DataFrame, strategy: str = 'ema50_200', config: dict | None = None, current_balance: float = 5000.0, symbol: str = 'EURUSD'):
@@ -889,8 +1184,13 @@ def mean_reversion_strategy(df: pd.DataFrame, config: dict | None = None):
 @register_rule('eurusd_advanced')
 def eurusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     """
-    Estrategia EURUSD: Breakout 20 períodos + EMA50/EMA200 filtro + RSI >50/<50
-    Implementación exacta según especificaciones del README
+    Estrategia EURUSD OPTIMIZADA: Menos estricta, más oportunidades
+    
+    MEJORAS IMPLEMENTADAS:
+    - Breakout menos exigente (15 períodos en vez de 20)
+    - RSI más amplio (40-60 en vez de 50)
+    - Filtros más flexibles para generar más señales
+    - Mejor distribución de confianza
     """
     cfg = config or {}
     df = df.copy()
@@ -903,125 +1203,268 @@ def eurusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     df['ema50'] = df['close'].ewm(span=50).mean()
     df['ema200'] = df['close'].ewm(span=200).mean()
     df['rsi'] = _rsi(df['close'], 14)
+    df['atr'] = _atr(df, 14)
     
-    # Breakout de 20 períodos
-    df['high_20'] = df['high'].rolling(20).max()
-    df['low_20'] = df['low'].rolling(20).min()
+    # Breakout de 15 períodos (menos exigente)
+    df['high_15'] = df['high'].rolling(15).max()
+    df['low_15'] = df['low'].rolling(15).min()
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
     price = float(last['close'])
+    atr_current = last['atr']
     
-    # Señal de compra: Breakout alcista + filtros
-    if (price > last['high_20'] and  # Breakout alcista de 20 períodos
-        last['ema50'] > last['ema200'] and  # EMA50 > EMA200 (tendencia alcista)
-        last['rsi'] > 50):  # RSI > 50
+    # 🔹 SEÑAL DE COMPRA: Breakout alcista RELAJADO
+    if (price > last['high_15'] and  # Breakout alcista de 15 períodos (menos exigente)
+        last['ema50'] > last['ema200']):  # Solo EMA50 > EMA200 (tendencia alcista)
         
-        # Calcular niveles
-        atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-        sl_distance = atr_value * 1.5
-        tp_distance = sl_distance * 2.0
+        # RSI más flexible: 40-80 (antes era >50)
+        rsi_ok = 40 <= last['rsi'] <= 80
         
-        signal = {
-            'symbol': 'EURUSD',
-            'type': 'BUY',
-            'entry': price,
-            'sl': price - sl_distance,
-            'tp': price + tp_distance,
-            'explanation': f'EURUSD: Breakout alcista 20P + EMA50>EMA200 + RSI>50 ({last["rsi"]:.1f})',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 45))),
-            'confidence': 'HIGH' if last['rsi'] > 60 else 'MEDIUM',
-            'strategy': 'eurusd_advanced'
-        }
-        return signal, df
+        if rsi_ok:
+            # Calcular niveles
+            sl_distance = atr_current * 1.2  # SL más ajustado
+            tp_distance = sl_distance * 2.0
+            
+            # Determinar confianza basada en múltiples factores
+            confidence_score = 0
+            
+            # Factor 1: Fuerza del RSI
+            if 50 <= last['rsi'] <= 70:
+                confidence_score += 1
+            
+            # Factor 2: Separación EMAs
+            ema_separation = (last['ema50'] - last['ema200']) / atr_current
+            if ema_separation > 0.5:
+                confidence_score += 1
+                
+            # Factor 3: Momentum del breakout
+            breakout_strength = (price - last['high_15']) / atr_current
+            if breakout_strength > 0.3:
+                confidence_score += 1
+            
+            # Mapear score a confianza
+            if confidence_score >= 2:
+                confidence = 'HIGH'
+            elif confidence_score == 1:
+                confidence = 'MEDIUM-HIGH'
+            else:
+                confidence = 'MEDIUM'
+            
+            signal = {
+                'symbol': 'EURUSD',
+                'type': 'BUY',
+                'entry': price,
+                'sl': price - sl_distance,
+                'tp': price + tp_distance,
+                'explanation': f'EURUSD RELAXED: Breakout alcista 15P + EMA50>EMA200 + RSI {last["rsi"]:.1f} (Score: {confidence_score})',
+                'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 45))),
+                'confidence': confidence,
+                'strategy': 'eurusd_advanced'
+            }
+            
+            logger.info(f"EURUSD BUY signal generated: RSI {last['rsi']:.1f}, Confidence {confidence} (Score: {confidence_score})")
+            return signal, df
     
-    # Señal de venta: Breakout bajista + filtros
-    if (price < last['low_20'] and  # Breakout bajista de 20 períodos
-        last['ema50'] < last['ema200'] and  # EMA50 < EMA200 (tendencia bajista)
-        last['rsi'] < 50):  # RSI < 50
+    # 🔹 SEÑAL DE VENTA: Breakout bajista RELAJADO
+    if (price < last['low_15'] and  # Breakout bajista de 15 períodos (menos exigente)
+        last['ema50'] < last['ema200']):  # Solo EMA50 < EMA200 (tendencia bajista)
         
-        # Calcular niveles
-        atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-        sl_distance = atr_value * 1.5
-        tp_distance = sl_distance * 2.0
+        # RSI más flexible: 20-60 (antes era <50)
+        rsi_ok = 20 <= last['rsi'] <= 60
         
-        signal = {
-            'symbol': 'EURUSD',
-            'type': 'SELL',
-            'entry': price,
-            'sl': price + sl_distance,
-            'tp': price - tp_distance,
-            'explanation': f'EURUSD: Breakout bajista 20P + EMA50<EMA200 + RSI<50 ({last["rsi"]:.1f})',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 45))),
-            'confidence': 'HIGH' if last['rsi'] < 40 else 'MEDIUM',
-            'strategy': 'eurusd_advanced'
-        }
-        return signal, df
+        if rsi_ok:
+            # Calcular niveles
+            sl_distance = atr_current * 1.2  # SL más ajustado
+            tp_distance = sl_distance * 2.0
+            
+            # Determinar confianza basada en múltiples factores
+            confidence_score = 0
+            
+            # Factor 1: Fuerza del RSI
+            if 30 <= last['rsi'] <= 50:
+                confidence_score += 1
+            
+            # Factor 2: Separación EMAs
+            ema_separation = (last['ema200'] - last['ema50']) / atr_current
+            if ema_separation > 0.5:
+                confidence_score += 1
+                
+            # Factor 3: Momentum del breakout
+            breakout_strength = (last['low_15'] - price) / atr_current
+            if breakout_strength > 0.3:
+                confidence_score += 1
+            
+            # Mapear score a confianza
+            if confidence_score >= 2:
+                confidence = 'HIGH'
+            elif confidence_score == 1:
+                confidence = 'MEDIUM-HIGH'
+            else:
+                confidence = 'MEDIUM'
+            
+            signal = {
+                'symbol': 'EURUSD',
+                'type': 'SELL',
+                'entry': price,
+                'sl': price + sl_distance,
+                'tp': price - tp_distance,
+                'explanation': f'EURUSD RELAXED: Breakout bajista 15P + EMA50<EMA200 + RSI {last["rsi"]:.1f} (Score: {confidence_score})',
+                'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 45))),
+                'confidence': confidence,
+                'strategy': 'eurusd_advanced'
+            }
+            
+            logger.info(f"EURUSD SELL signal generated: RSI {last['rsi']:.1f}, Confidence {confidence} (Score: {confidence_score})")
+            return signal, df
     
+    # Si no hay breakout, intentar señales de continuación de tendencia
+    # 🔹 SEÑAL DE CONTINUACIÓN ALCISTA (menos exigente)
+    if (last['ema50'] > last['ema200'] and  # Tendencia alcista
+        price > last['ema50'] and  # Precio por encima de EMA50
+        45 <= last['rsi'] <= 65):  # RSI neutral-alcista
+        
+        # Verificar que no estemos en sobrecompra extrema
+        recent_high = df['high'].tail(10).max()
+        if price < recent_high * 1.002:  # No más del 0.2% por encima del máximo reciente
+            
+            sl_distance = atr_current * 1.0
+            tp_distance = sl_distance * 1.5
+            
+            signal = {
+                'symbol': 'EURUSD',
+                'type': 'BUY',
+                'entry': price,
+                'sl': price - sl_distance,
+                'tp': price + tp_distance,
+                'explanation': f'EURUSD CONTINUATION: Tendencia alcista + RSI {last["rsi"]:.1f}',
+                'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 30))),
+                'confidence': 'MEDIUM',
+                'strategy': 'eurusd_advanced'
+            }
+            
+            logger.info(f"EURUSD BUY continuation signal: RSI {last['rsi']:.1f}")
+            return signal, df
+    
+    # 🔹 SEÑAL DE CONTINUACIÓN BAJISTA (menos exigente)
+    if (last['ema50'] < last['ema200'] and  # Tendencia bajista
+        price < last['ema50'] and  # Precio por debajo de EMA50
+        35 <= last['rsi'] <= 55):  # RSI neutral-bajista
+        
+        # Verificar que no estemos en sobreventa extrema
+        recent_low = df['low'].tail(10).min()
+        if price > recent_low * 0.998:  # No más del 0.2% por debajo del mínimo reciente
+            
+            sl_distance = atr_current * 1.0
+            tp_distance = sl_distance * 1.5
+            
+            signal = {
+                'symbol': 'EURUSD',
+                'type': 'SELL',
+                'entry': price,
+                'sl': price + sl_distance,
+                'tp': price - tp_distance,
+                'explanation': f'EURUSD CONTINUATION: Tendencia bajista + RSI {last["rsi"]:.1f}',
+                'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 30))),
+                'confidence': 'MEDIUM',
+                'strategy': 'eurusd_advanced'
+            }
+            
+            logger.info(f"EURUSD SELL continuation signal: RSI {last['rsi']:.1f}")
+            return signal, df
+    
+    logger.debug("EURUSD: No valid setup found")
     return None, df
 
 
 @register_rule('xauusd_advanced')
 def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     """
-    Estrategia XAUUSD MEJORADA: Más selectiva, menos spam, mayor calidad
+    Estrategia XAUUSD ULTRA-SELECTIVA v2.0: Máxima reducción de ruido
     
-    MEJORAS IMPLEMENTADAS:
-    - Filtro de volatilidad mínima
-    - Verificación de desplazamiento real
-    - Evitar mercado lateral
-    - Filtros de impulso
-    - Mayor selectividad en niveles
+    NUEVAS MEJORAS IMPLEMENTADAS:
+    - Wick ratio mínimo 50% (más estricto)
+    - Distancia al nivel ±3$ (ultra estricto)
+    - ATR mínimo más exigente
+    - Filtro de sesión mejorado
+    - Filtro de rango lateral más estricto
+    - Sistema de zonas inteligente
+    - Cooldown integrado con duplicate_filter
     """
     cfg = config or {}
     df = df.copy()
     
     # Verificar datos suficientes
     if len(df) < 200:
+        logger.debug("XAUUSD rejected: Insufficient data")
+        return None, df
+    
+    # 🕐 FILTRO DE SESIÓN: Solo Londres + NY overlap (13-17 GMT) - MÁS ESTRICTO
+    current_hour = datetime.now(timezone.utc).hour
+    overlap_session = 13 <= current_hour <= 17  # Solo overlap Londres-NY
+    
+    if not overlap_session:
+        logger.debug(f"XAUUSD rejected: Outside overlap session (hour: {current_hour})")
         return None, df
     
     # Indicadores requeridos
     df['ema50'] = df['close'].ewm(span=50).mean()
     df['ema200'] = df['close'].ewm(span=200).mean()
-    df['atr'] = _atr(df, 14)  # ATR para filtros de volatilidad
+    df['atr'] = _atr(df, 14)
+    df['rsi'] = _rsi(df['close'], 14)  # Añadir RSI para filtro adicional
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
     price = float(last['close'])
     atr_current = last['atr']
-    atr_mean = df['atr'].tail(20).mean()  # ATR promedio últimas 20 velas
+    atr_mean = df['atr'].tail(20).mean()
+    rsi_current = last['rsi']
     
-    # 🧩 FILTRO 1: VOLATILIDAD MÍNIMA
+    # 🧩 FILTRO 1: VOLATILIDAD ULTRA-ESTRICTA
     candle_range = last['high'] - last['low']
-    if candle_range < 8.0:  # Mínimo 8 puntos de rango en la vela
-        logger.debug(f"XAUUSD rejected: Low volatility candle ({candle_range:.1f} < 8.0)")
+    if candle_range < 15.0:  # MÁS ESTRICTO: 15 puntos mínimo
+        logger.debug(f"XAUUSD rejected: Low volatility candle ({candle_range:.1f} < 15.0)")
         return None, df
     
-    # 🧩 FILTRO 2: ATR MÍNIMO (evitar mercado muerto)
-    if atr_current < atr_mean * 0.7:  # ATR debe ser al menos 70% del promedio
-        logger.debug(f"XAUUSD rejected: Low volatility regime (ATR: {atr_current:.1f} < {atr_mean*0.7:.1f})")
+    # 🧩 FILTRO 2: ATR ULTRA-EXIGENTE
+    if atr_current < atr_mean * 1.0:  # ATR debe ser igual o mayor al promedio
+        logger.debug(f"XAUUSD rejected: Low volatility regime (ATR: {atr_current:.1f} < {atr_mean:.1f})")
         return None, df
     
-    # 🧩 FILTRO 3: EVITAR MERCADO LATERAL
+    # 🧩 FILTRO 3: EVITAR MERCADO LATERAL ULTRA-ESTRICTO
     ema_separation = abs(last['ema50'] - last['ema200'])
-    if ema_separation < atr_current * 0.4:  # EMAs demasiado juntas = lateral
-        logger.debug(f"XAUUSD rejected: Sideways market (EMA separation: {ema_separation:.1f} < {atr_current*0.4:.1f})")
+    if ema_separation < atr_current * 0.8:  # EMAs mucho más separadas requeridas
+        logger.debug(f"XAUUSD rejected: Sideways market (EMA separation: {ema_separation:.1f} < {atr_current*0.8:.1f})")
         return None, df
     
-    # 🧩 FILTRO 4: DESPLAZAMIENTO REAL OBLIGATORIO
+    # 🧩 FILTRO 4: DESPLAZAMIENTO REAL ULTRA-EXIGENTE
     price_move = abs(price - prev['close'])
-    if price_move < atr_current * 0.3:  # Movimiento mínimo requerido
-        logger.debug(f"XAUUSD rejected: No real price displacement ({price_move:.1f} < {atr_current*0.3:.1f})")
+    if price_move < atr_current * 0.5:  # Movimiento mínimo más exigente
+        logger.debug(f"XAUUSD rejected: No real price displacement ({price_move:.1f} < {atr_current*0.5:.1f})")
         return None, df
     
-    # Niveles psicológicos dinámicos - MÁS SELECTIVOS
-    closest_level = round(price / 50) * 50
+    # 🧩 FILTRO 5: RSI NO EXTREMO (evitar sobrecompra/sobreventa)
+    if rsi_current < 25 or rsi_current > 75:
+        logger.debug(f"XAUUSD rejected: RSI too extreme ({rsi_current:.1f})")
+        return None, df
+    
+    # Niveles psicológicos dinámicos - ULTRA-SELECTIVOS
+    closest_level = round(price / 25) * 25  # Niveles cada 25 puntos
     distance_to_level = abs(price - closest_level)
     
-    # 🧩 FILTRO 5: PROXIMIDAD MÁS ESTRICTA A NIVELES
-    # Solo operar si estamos MUY cerca del nivel (máximo 8 puntos)
-    if distance_to_level > 8.0:
-        logger.debug(f"XAUUSD rejected: Too far from psychological level ({distance_to_level:.1f} > 8.0)")
+    # 🧩 FILTRO 6: PROXIMIDAD ULTRA-ULTRA-ESTRICTA A NIVELES
+    # Solo operar si estamos EXTREMADAMENTE cerca del nivel (máximo 3 puntos)
+    if distance_to_level > 3.0:
+        logger.debug(f"XAUUSD rejected: Too far from psychological level ({distance_to_level:.1f} > 3.0)")
+        return None, df
+    
+    # 🧩 FILTRO 7: VERIFICAR QUE NO ESTAMOS EN RANGO MUERTO
+    recent_high = df['high'].tail(20).max()
+    recent_low = df['low'].tail(20).min()
+    recent_range = recent_high - recent_low
+    
+    if recent_range < atr_current * 10:  # Rango reciente debe ser significativo
+        logger.debug(f"XAUUSD rejected: Dead range market ({recent_range:.1f} < {atr_current*10:.1f})")
         return None, df
     
     # Calcular tamaño de mecha
@@ -1031,20 +1474,45 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     upper_wick_pct = (upper_wick / candle_range) * 100 if candle_range > 0 else 0
     lower_wick_pct = (lower_wick / candle_range) * 100 if candle_range > 0 else 0
     
-    # 🧩 SEÑAL DE COMPRA: Reversión alcista MÁS SELECTIVA
-    if (distance_to_level <= 8.0 and  # ±8$ del nivel psicológico (más estricto)
+    # 🧩 SEÑAL DE COMPRA: Reversión alcista ULTRA-ULTRA-SELECTIVA
+    if (distance_to_level <= 3.0 and  # ±3$ del nivel psicológico (ULTRA estricto)
         price < closest_level and  # Precio por debajo del nivel
         last['ema50'] > last['ema200'] and  # Tendencia alcista
-        lower_wick_pct >= 35 and  # Mecha inferior ≥35% (más estricto)
+        lower_wick_pct >= 50 and  # Mecha inferior ≥50% (ULTRA estricto)
         last['close'] > last['open'] and  # Vela alcista
-        candle_range >= 10.0):  # Vela con rango mínimo de 10 puntos
+        candle_range >= 15.0 and  # Vela con rango mínimo de 15 puntos
+        30 <= rsi_current <= 70):  # RSI en rango operativo
         
-        # Niveles fijos para oro
-        sl_distance = 12.0
-        tp_distance = 24.0
+        # Niveles fijos para oro - MÁS CONSERVADORES
+        sl_distance = 8.0   # SL más ajustado
+        tp_distance = 16.0  # TP más conservador (2:1 ratio)
         
-        # Determinar confianza de forma más estricta
-        confidence = 'HIGH' if (distance_to_level <= 4 and lower_wick_pct >= 45) else 'MEDIUM'
+        # Determinar confianza de forma ULTRA-ESTRICTA
+        confidence_score = 0
+        
+        # Factor 1: Proximidad extrema al nivel
+        if distance_to_level <= 2.0:
+            confidence_score += 1
+            
+        # Factor 2: Mecha ultra fuerte
+        if lower_wick_pct >= 60:
+            confidence_score += 1
+            
+        # Factor 3: Volatilidad muy alta
+        if atr_current > atr_mean * 1.3:
+            confidence_score += 1
+            
+        # Factor 4: RSI en zona óptima
+        if 40 <= rsi_current <= 60:
+            confidence_score += 1
+        
+        # Mapear score a confianza - MÁS ESTRICTO
+        if confidence_score >= 3:
+            confidence = 'HIGH'
+        elif confidence_score >= 2:
+            confidence = 'MEDIUM-HIGH'
+        else:
+            confidence = 'MEDIUM'
         
         signal = {
             'symbol': 'XAUUSD',
@@ -1052,29 +1520,55 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price - sl_distance,
             'tp': price + tp_distance,
-            'explanation': f'XAUUSD SELECTIVE: Reversión alcista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {lower_wick_pct:.1f}%, ATR {atr_current:.1f}',
+            'zone': f"XAUUSD_{closest_level:.0f}",  # Añadir zona
+            'explanation': f'XAUUSD ULTRA-SELECT v2: Reversión alcista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {lower_wick_pct:.1f}%, ATR {atr_current:.1f}, RSI {rsi_current:.1f} (Score: {confidence_score})',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 60))),
             'confidence': confidence,
-            'strategy': 'xauusd_advanced'
+            'strategy': 'xauusd_advanced_v2'
         }
         
-        logger.info(f"XAUUSD BUY signal generated: Level distance {distance_to_level:.1f}, Wick {lower_wick_pct:.1f}%, Confidence {confidence}")
+        logger.info(f"🟢 XAUUSD BUY ULTRA-SELECT v2: Level distance {distance_to_level:.1f}, Wick {lower_wick_pct:.1f}%, RSI {rsi_current:.1f}, Confidence {confidence} (Score: {confidence_score})")
         return signal, df
     
-    # 🧩 SEÑAL DE VENTA: Reversión bajista MÁS SELECTIVA
-    if (distance_to_level <= 8.0 and  # ±8$ del nivel psicológico (más estricto)
+    # 🧩 SEÑAL DE VENTA: Reversión bajista ULTRA-ULTRA-SELECTIVA
+    if (distance_to_level <= 3.0 and  # ±3$ del nivel psicológico (ULTRA estricto)
         price > closest_level and  # Precio por encima del nivel
         last['ema50'] < last['ema200'] and  # Tendencia bajista
-        upper_wick_pct >= 35 and  # Mecha superior ≥35% (más estricto)
+        upper_wick_pct >= 50 and  # Mecha superior ≥50% (ULTRA estricto)
         last['close'] < last['open'] and  # Vela bajista
-        candle_range >= 10.0):  # Vela con rango mínimo de 10 puntos
+        candle_range >= 15.0 and  # Vela con rango mínimo de 15 puntos
+        30 <= rsi_current <= 70):  # RSI en rango operativo
         
-        # Niveles fijos para oro
-        sl_distance = 12.0
-        tp_distance = 24.0
+        # Niveles fijos para oro - MÁS CONSERVADORES
+        sl_distance = 8.0   # SL más ajustado
+        tp_distance = 16.0  # TP más conservador (2:1 ratio)
         
-        # Determinar confianza de forma más estricta
-        confidence = 'HIGH' if (distance_to_level <= 4 and upper_wick_pct >= 45) else 'MEDIUM'
+        # Determinar confianza de forma ULTRA-ESTRICTA
+        confidence_score = 0
+        
+        # Factor 1: Proximidad extrema al nivel
+        if distance_to_level <= 2.0:
+            confidence_score += 1
+            
+        # Factor 2: Mecha ultra fuerte
+        if upper_wick_pct >= 60:
+            confidence_score += 1
+            
+        # Factor 3: Volatilidad muy alta
+        if atr_current > atr_mean * 1.3:
+            confidence_score += 1
+            
+        # Factor 4: RSI en zona óptima
+        if 40 <= rsi_current <= 60:
+            confidence_score += 1
+        
+        # Mapear score a confianza - MÁS ESTRICTO
+        if confidence_score >= 3:
+            confidence = 'HIGH'
+        elif confidence_score >= 2:
+            confidence = 'MEDIUM-HIGH'
+        else:
+            confidence = 'MEDIUM'
         
         signal = {
             'symbol': 'XAUUSD',
@@ -1082,25 +1576,32 @@ def xauusd_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
             'entry': price,
             'sl': price + sl_distance,
             'tp': price - tp_distance,
-            'explanation': f'XAUUSD SELECTIVE: Reversión bajista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {upper_wick_pct:.1f}%, ATR {atr_current:.1f}',
+            'zone': f"XAUUSD_{closest_level:.0f}",  # Añadir zona
+            'explanation': f'XAUUSD ULTRA-SELECT v2: Reversión bajista ${distance_to_level:.1f} del nivel ${closest_level}, mecha {upper_wick_pct:.1f}%, ATR {atr_current:.1f}, RSI {rsi_current:.1f} (Score: {confidence_score})',
             'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 60))),
             'confidence': confidence,
-            'strategy': 'xauusd_advanced'
+            'strategy': 'xauusd_advanced_v2'
         }
         
-        logger.info(f"XAUUSD SELL signal generated: Level distance {distance_to_level:.1f}, Wick {upper_wick_pct:.1f}%, Confidence {confidence}")
+        logger.info(f"🔴 XAUUSD SELL ULTRA-SELECT v2: Level distance {distance_to_level:.1f}, Wick {upper_wick_pct:.1f}%, RSI {rsi_current:.1f}, Confidence {confidence} (Score: {confidence_score})")
         return signal, df
     
     # Si llegamos aquí, no hay señal válida
-    logger.debug("XAUUSD: No valid setup found after all filters")
+    logger.debug("XAUUSD v2: No valid setup found after ultra-strict filters")
     return None, df
 
 
 @register_rule('btceur_advanced')
 def btceur_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     """
-    Estrategia BTCEUR: EMA12/26 cross + EMA50 filtro + RSI direccional
-    Implementación exacta según especificaciones del README
+    Estrategia BTCEUR OPTIMIZADA: Más flexible, menos conservador
+    
+    MEJORAS IMPLEMENTADAS:
+    - Cruces EMA con menor separación mínima
+    - RSI menos restrictivo (35-65 en vez de 50)
+    - Momentum no tan alto como requisito
+    - ATR mínimo reducido
+    - Mejor distribución de confianza
     """
     cfg = config or {}
     df = df.copy()
@@ -1114,73 +1615,205 @@ def btceur_advanced_strategy(df: pd.DataFrame, config: dict | None = None):
     df['ema26'] = df['close'].ewm(span=26).mean()
     df['ema50'] = df['close'].ewm(span=50).mean()
     df['rsi'] = _rsi(df['close'], 14)
+    df['atr'] = _atr(df, 14)
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
     price = float(last['close'])
+    atr_current = last['atr']
     
-    # Señal de compra: EMA12 > EMA26 + filtros de estructura
+    # 🔹 SEÑAL DE COMPRA: EMA12 > EMA26 RELAJADO
     if (last['ema12'] > last['ema26'] and  # EMA12 > EMA26 (momentum tendencial)
-        last['ema12'] > last['ema50'] and  # Filtro de estructura: EMA12 > EMA50
-        last['rsi'] > 50):  # Fuerza mínima: RSI > 50
+        last['ema12'] > last['ema50']):  # Filtro de estructura: EMA12 > EMA50
         
-        # Verificar que no esté en lateral (EMA50 plana)
-        ema50_slope = (last['ema50'] - df['ema50'].iloc[-5]) / 5
-        if abs(ema50_slope) < 0.0001:  # EMA50 muy plana = lateral
-            return None, df
+        # RSI más flexible: 35-75 (antes era >50)
+        rsi_ok = 35 <= last['rsi'] <= 75
         
-        # Verificar ATR mínimo (no entrar si ATR bajo)
-        atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-        if atr_value < 50:  # ATR muy bajo = mercado muerto
-            return None, df
-        
-        # Calcular niveles según especificación
-        sl_distance = atr_value * 2.5
-        tp_distance = sl_distance * 2.5  # TP = SL × 2.5
-        
-        signal = {
-            'symbol': 'BTCEUR',
-            'type': 'BUY',
-            'entry': price,
-            'sl': price - sl_distance,
-            'tp': price + tp_distance,  # CORREGIDO: era price - tp_distance
-            'explanation': f'BTCEUR: EMA12>EMA26+EMA50 + RSI {last["rsi"]:.1f} + ATR {atr_value:.0f}',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 90))),
-            'confidence': 'HIGH' if last['rsi'] > 60 and ema50_slope > 0.0002 else 'MEDIUM',
-            'strategy': 'btceur_advanced'
-        }
-        return signal, df
+        if rsi_ok:
+            # Verificar que no esté en lateral RELAJADO (EMA50 menos plana)
+            ema50_slope = (last['ema50'] - df['ema50'].iloc[-5]) / 5
+            lateral_threshold = 0.00005  # Más permisivo (antes 0.0001)
+            
+            if abs(ema50_slope) >= lateral_threshold:  # No está completamente lateral
+                
+                # ATR mínimo REDUCIDO (menos restrictivo)
+                atr_min = 30  # Reducido de 50 a 30
+                
+                if atr_current >= atr_min:
+                    
+                    # Determinar confianza basada en múltiples factores
+                    confidence_score = 0
+                    
+                    # Factor 1: Fuerza del RSI
+                    if 50 <= last['rsi'] <= 70:
+                        confidence_score += 1
+                    
+                    # Factor 2: Separación EMAs (momentum)
+                    ema_separation = (last['ema12'] - last['ema26']) / atr_current
+                    if ema_separation > 0.3:  # Separación significativa
+                        confidence_score += 1
+                        
+                    # Factor 3: Pendiente EMA50 (tendencia)
+                    if ema50_slope > 0.0001:  # Tendencia alcista clara
+                        confidence_score += 1
+                        
+                    # Factor 4: ATR alto (volatilidad)
+                    atr_mean = df['atr'].tail(20).mean()
+                    if atr_current > atr_mean * 1.1:
+                        confidence_score += 1
+                    
+                    # Mapear score a confianza
+                    if confidence_score >= 3:
+                        confidence = 'HIGH'
+                    elif confidence_score == 2:
+                        confidence = 'MEDIUM-HIGH'
+                    elif confidence_score == 1:
+                        confidence = 'MEDIUM'
+                    else:
+                        confidence = 'MEDIUM'  # Mínimo MEDIUM para BTCEUR
+                    
+                    # Calcular niveles más conservadores
+                    sl_distance = atr_current * 2.0  # Reducido de 2.5 a 2.0
+                    tp_distance = sl_distance * 2.0  # Reducido de 2.5 a 2.0
+                    
+                    signal = {
+                        'symbol': 'BTCEUR',
+                        'type': 'BUY',
+                        'entry': price,
+                        'sl': price - sl_distance,
+                        'tp': price + tp_distance,
+                        'explanation': f'BTCEUR RELAXED: EMA12>EMA26+EMA50 + RSI {last["rsi"]:.1f} + ATR {atr_current:.0f} (Score: {confidence_score})',
+                        'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 90))),
+                        'confidence': confidence,
+                        'strategy': 'btceur_advanced'
+                    }
+                    
+                    logger.info(f"BTCEUR BUY signal generated: RSI {last['rsi']:.1f}, Confidence {confidence} (Score: {confidence_score})")
+                    return signal, df
     
-    # Señal de venta: EMA12 < EMA26 + filtros de estructura
+    # 🔹 SEÑAL DE VENTA: EMA12 < EMA26 RELAJADO
     if (last['ema12'] < last['ema26'] and  # EMA12 < EMA26 (momentum tendencial bajista)
-        last['ema12'] < last['ema50'] and  # Filtro de estructura: EMA12 < EMA50
-        last['rsi'] < 50):  # Fuerza mínima: RSI < 50
+        last['ema12'] < last['ema50']):  # Filtro de estructura: EMA12 < EMA50
         
-        # Verificar que no esté en lateral (EMA50 plana)
-        ema50_slope = (last['ema50'] - df['ema50'].iloc[-5]) / 5
-        if abs(ema50_slope) < 0.0001:  # EMA50 muy plana = lateral
-            return None, df
+        # RSI más flexible: 25-65 (antes era <50)
+        rsi_ok = 25 <= last['rsi'] <= 65
         
-        # Verificar ATR mínimo (no entrar si ATR bajo)
-        atr_value = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-        if atr_value < 50:  # ATR muy bajo = mercado muerto
-            return None, df
-        
-        # Calcular niveles según especificación
-        sl_distance = atr_value * 2.5
-        tp_distance = sl_distance * 2.5  # TP = SL × 2.5
-        
-        signal = {
-            'symbol': 'BTCEUR',
-            'type': 'SELL',
-            'entry': price,
-            'sl': price + sl_distance,
-            'tp': price - tp_distance,
-            'explanation': f'BTCEUR: EMA12<EMA26+EMA50 + RSI {last["rsi"]:.1f} + ATR {atr_value:.0f}',
-            'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 90))),
-            'confidence': 'HIGH' if last['rsi'] < 40 and ema50_slope < -0.0002 else 'MEDIUM',
-            'strategy': 'btceur_advanced'
-        }
-        return signal, df
+        if rsi_ok:
+            # Verificar que no esté en lateral RELAJADO (EMA50 menos plana)
+            ema50_slope = (last['ema50'] - df['ema50'].iloc[-5]) / 5
+            lateral_threshold = 0.00005  # Más permisivo (antes 0.0001)
+            
+            if abs(ema50_slope) >= lateral_threshold:  # No está completamente lateral
+                
+                # ATR mínimo REDUCIDO (menos restrictivo)
+                atr_min = 30  # Reducido de 50 a 30
+                
+                if atr_current >= atr_min:
+                    
+                    # Determinar confianza basada en múltiples factores
+                    confidence_score = 0
+                    
+                    # Factor 1: Fuerza del RSI
+                    if 30 <= last['rsi'] <= 50:
+                        confidence_score += 1
+                    
+                    # Factor 2: Separación EMAs (momentum)
+                    ema_separation = (last['ema26'] - last['ema12']) / atr_current
+                    if ema_separation > 0.3:  # Separación significativa
+                        confidence_score += 1
+                        
+                    # Factor 3: Pendiente EMA50 (tendencia)
+                    if ema50_slope < -0.0001:  # Tendencia bajista clara
+                        confidence_score += 1
+                        
+                    # Factor 4: ATR alto (volatilidad)
+                    atr_mean = df['atr'].tail(20).mean()
+                    if atr_current > atr_mean * 1.1:
+                        confidence_score += 1
+                    
+                    # Mapear score a confianza
+                    if confidence_score >= 3:
+                        confidence = 'HIGH'
+                    elif confidence_score == 2:
+                        confidence = 'MEDIUM-HIGH'
+                    elif confidence_score == 1:
+                        confidence = 'MEDIUM'
+                    else:
+                        confidence = 'MEDIUM'  # Mínimo MEDIUM para BTCEUR
+                    
+                    # Calcular niveles más conservadores
+                    sl_distance = atr_current * 2.0  # Reducido de 2.5 a 2.0
+                    tp_distance = sl_distance * 2.0  # Reducido de 2.5 a 2.0
+                    
+                    signal = {
+                        'symbol': 'BTCEUR',
+                        'type': 'SELL',
+                        'entry': price,
+                        'sl': price + sl_distance,
+                        'tp': price - tp_distance,
+                        'explanation': f'BTCEUR RELAXED: EMA12<EMA26+EMA50 + RSI {last["rsi"]:.1f} + ATR {atr_current:.0f} (Score: {confidence_score})',
+                        'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 90))),
+                        'confidence': confidence,
+                        'strategy': 'btceur_advanced'
+                    }
+                    
+                    logger.info(f"BTCEUR SELL signal generated: RSI {last['rsi']:.1f}, Confidence {confidence} (Score: {confidence_score})")
+                    return signal, df
     
+    # Si no hay cruce claro, intentar señales de momentum
+    # 🔹 SEÑAL DE MOMENTUM ALCISTA (nueva)
+    if (last['ema12'] > last['ema50'] and  # Precio por encima de EMA50
+        last['ema50'] > last['ema200'] if 'ema200' in df.columns else True and  # Tendencia general alcista
+        50 <= last['rsi'] <= 70):  # RSI en zona de fuerza
+        
+        # Verificar momentum reciente
+        price_change = (price - df['close'].iloc[-5]) / df['close'].iloc[-5]
+        if price_change > 0.01:  # Al menos 1% de movimiento en 5 períodos
+            
+            sl_distance = atr_current * 1.5
+            tp_distance = sl_distance * 1.5
+            
+            signal = {
+                'symbol': 'BTCEUR',
+                'type': 'BUY',
+                'entry': price,
+                'sl': price - sl_distance,
+                'tp': price + tp_distance,
+                'explanation': f'BTCEUR MOMENTUM: Tendencia alcista + RSI {last["rsi"]:.1f} + Momentum {price_change*100:.1f}%',
+                'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 60))),
+                'confidence': 'MEDIUM',
+                'strategy': 'btceur_advanced'
+            }
+            
+            logger.info(f"BTCEUR BUY momentum signal: RSI {last['rsi']:.1f}, Momentum {price_change*100:.1f}%")
+            return signal, df
+    
+    # 🔹 SEÑAL DE MOMENTUM BAJISTA (nueva)
+    if (last['ema12'] < last['ema50'] and  # Precio por debajo de EMA50
+        last['ema50'] < last['ema200'] if 'ema200' in df.columns else True and  # Tendencia general bajista
+        30 <= last['rsi'] <= 50):  # RSI en zona de debilidad
+        
+        # Verificar momentum reciente
+        price_change = (price - df['close'].iloc[-5]) / df['close'].iloc[-5]
+        if price_change < -0.01:  # Al menos -1% de movimiento en 5 períodos
+            
+            sl_distance = atr_current * 1.5
+            tp_distance = sl_distance * 1.5
+            
+            signal = {
+                'symbol': 'BTCEUR',
+                'type': 'SELL',
+                'entry': price,
+                'sl': price + sl_distance,
+                'tp': price - tp_distance,
+                'explanation': f'BTCEUR MOMENTUM: Tendencia bajista + RSI {last["rsi"]:.1f} + Momentum {price_change*100:.1f}%',
+                'expires': datetime.now(timezone.utc) + timedelta(minutes=int(cfg.get('expires_minutes', 60))),
+                'confidence': 'MEDIUM',
+                'strategy': 'btceur_advanced'
+            }
+            
+            logger.info(f"BTCEUR SELL momentum signal: RSI {last['rsi']:.1f}, Momentum {price_change*100:.1f}%")
+            return signal, df
+    
+    logger.debug("BTCEUR: No valid setup found")
     return None, df

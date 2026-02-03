@@ -1,54 +1,63 @@
 {
   "EURUSD": {
-    "strategy": "eurusd_advanced",
-    "fallback_strategy": "ema50_200",
+    "strategy": "eurusd_simple",
+    "fallback_strategy": "eurusd_advanced",
     "enabled": true,
-    "risk_per_trade": 1.2,
-    "max_daily_trades": 10,
-    "min_rr_ratio": 2.0,
-    "expires_minutes": 45,
+    "risk_per_trade": 1.0,
+    "max_daily_trades": 4,
+    "min_rr_ratio": 1.5,
+    "min_score": 0.66,
+    "expires_minutes": 30,
     "active_sessions": ["london", "newyork", "overlap"],
     "avoid_news": true,
-    "description": "Breakout 20 períodos + EMA50/EMA200 filtro + RSI >50/<50",
+    "description": "SIMPLIFICADO: Breakout 15P + RSI neutral + Sesión activa",
+    "philosophy": "Breakout + Pullback + Sesión",
     "timeframes": ["H1"],
     "priority": "HIGH",
     "use_fallback": true,
-    "use_emergency_fallback": true
+    "use_emergency_fallback": true,
+    "simplified_system": true
   },
 
   "XAUUSD": {
-    "strategy": "xauusd_advanced", 
-    "fallback_strategy": "rsi",
+    "strategy": "xauusd_simple", 
+    "fallback_strategy": "xauusd_advanced",
     "enabled": true,
     "risk_per_trade": 0.8,
-    "max_daily_trades": 8,
+    "max_daily_trades": 3,
     "min_rr_ratio": 2.0,
-    "expires_minutes": 60,
+    "min_score": 0.60,
+    "expires_minutes": 45,
     "active_sessions": ["london", "newyork", "overlap"],
     "avoid_news": true,
     "psychological_levels": [1900, 1950, 2000, 2050, 2100, 2150],
-    "description": "Reversión psicológica ±8-10$ del nivel + EMA50/EMA200 + Mecha ≥30%",
+    "description": "SIMPLIFICADO: Nivel psicológico ±10$ + Mecha >30% + Liquidez",
+    "philosophy": "Fakeouts + Rejection + Liquidez",
     "timeframes": ["H1", "H4"],
     "priority": "HIGH",
     "use_fallback": true,
-    "use_emergency_fallback": true
+    "use_emergency_fallback": true,
+    "simplified_system": true
   },
 
   "BTCEUR": {
-    "strategy": "btceur_advanced",
-    "fallback_strategy": "macd",
+    "strategy": "btceur_simple",
+    "fallback_strategy": "btceur_advanced",
     "enabled": true,
     "risk_per_trade": 0.6,
-    "max_daily_trades": 12,
-    "min_rr_ratio": 2.5,
-    "expires_minutes": 90,
+    "max_daily_trades": 5,
+    "min_rr_ratio": 1.5,
+    "min_score": 0.65,
+    "expires_minutes": 60,
     "active_sessions": ["all"],
     "avoid_news": false,
-    "description": "EMA12/26 cross + EMA50 filtro + RSI direccional",
+    "description": "SIMPLIFICADO: EMA12/26 momentum + EMA50 filtro + ATR expansión",
+    "philosophy": "Momentum + Tendencia + Expansión",
     "timeframes": ["H1", "H4"],
     "priority": "MEDIUM",
     "use_fallback": true,
-    "use_emergency_fallback": true
+    "use_emergency_fallback": true,
+    "simplified_system": true
   },
 
   "GBPUSD": {
@@ -72,14 +81,40 @@
   },
 
   "GLOBAL_SETTINGS": {
-    "max_total_risk": 4.0,
-    "max_daily_trades_all": 20,
-    "max_simultaneous_positions": 6,
-    "drawdown_limit": 20.0,
-    "profit_target_daily": 4.0,
-    "loss_limit_daily": 3.0,
+    "simplified_system": true,
+    "philosophy": "Sistema de scoring flexible - No AND estricto",
+    "max_total_risk": 2.5,
+    "max_daily_trades_all": 12,
+    "max_simultaneous_positions": 3,
+    "drawdown_limit": 15.0,
+    "profit_target_daily": 3.0,
+    "loss_limit_daily": 2.0,
     "correlation_limit": 0.4,
     "news_blackout_minutes": 30,
+    
+    "scoring_system": {
+      "enabled": true,
+      "default_min_score": 0.66,
+      "setup_weight": 0.5,
+      "confirmations_weight": 0.5,
+      "description": "Setup obligatorio + mínimo 1 confirmación válida"
+    },
+    
+    "frequency_control": {
+      "realistic_targets": true,
+      "expected_signals_per_day": "8-12 total",
+      "distribution": {
+        "EURUSD": "3-4 señales/día",
+        "XAUUSD": "2-3 señales/día", 
+        "BTCEUR": "3-5 señales/día"
+      }
+    },
+    
+    "market_logic": {
+      "EURUSD": "Breakout + pullback + sesión",
+      "XAUUSD": "Fakeouts + rejection + liquidez",
+      "BTCEUR": "Momentum + tendencia + expansión"
+    },
     
     "session_definitions": {
       "tokyo": {"start": 0, "end": 9, "description": "Sesión Asiática"},
