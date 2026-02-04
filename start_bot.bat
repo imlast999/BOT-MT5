@@ -101,8 +101,16 @@ echo    🌐 Servidor web en http://localhost:5000
 echo    ⏹️  Presiona Ctrl+C para detener
 echo.
 
-REM Ejecutar bot con captura de errores (el dashboard se inicia automáticamente desde bot.py)
-%PYTHON_CMD% %BOT_SCRIPT%
+REM Ejecutar bot con captura de errores y manejo de Ctrl+C
+REM Configurar manejo de señales para evitar prompt
+@echo off
+setlocal
+set "PYTHONUNBUFFERED=1"
+
+REM Ejecutar Python en modo no interactivo para evitar prompts
+echo | %PYTHON_CMD% %BOT_SCRIPT%
+
+endlocal
 
 REM Si llegamos aquí, el bot se cerró
 echo.
@@ -127,4 +135,6 @@ echo    - Comprueba la conexión a Discord
 echo    - El dashboard se genera automáticamente + servidor web
 echo.
 
-pause
+REM Auto-close after 3 seconds instead of pause to avoid Ctrl+C prompt
+echo ⏳ Cerrando en 3 segundos...
+timeout /t 3 /nobreak >nul 2>&1

@@ -234,6 +234,41 @@ class TradingEngine:
             'show_rate': (self.stats['signals_shown'] / total_evaluated * 100) if total_evaluated > 0 else 0,
             'top_rejection_reasons': dict(sorted(self.rejection_reasons.items(), key=lambda x: x[1], reverse=True)[:5])
         }
+    
+    async def get_market_data(self, symbol: str, timeframe: str = 'H1', count: int = 100) -> Optional[pd.DataFrame]:
+        """
+        Obtiene datos de mercado para un símbolo
+        
+        Args:
+            symbol: Símbolo del instrumento (e.g., 'EURUSD')
+            timeframe: Marco temporal (e.g., 'H1', 'M15')
+            count: Número de velas a obtener
+            
+        Returns:
+            DataFrame con datos OHLCV o None si hay error
+        """
+        try:
+            # Importar MT5 client functions
+            import mt5_client
+            
+            # Obtener datos usando la función get_candles
+            df = mt5_client.get_candles(symbol, timeframe, count)
+            
+            if df is None or len(df) == 0:
+                logger.warning(f"No data received for {symbol} {timeframe}")
+                return None
+            
+            # Asegurar que tenemos las columnas básicas
+            required_columns = ['open', 'high', 'low', 'close']
+            if not all(col in df.columns for col in required_columns):
+                logger.error(f"Missing required columns in data for {symbol}")
+                return None
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error getting market data for {symbol}: {e}")
+            return None
 
 
 # ============================================================================

@@ -450,6 +450,24 @@ class ConsolidatedFilters:
                 'market_config': self.market_config
             }
         }
+    
+    def get_stats(self) -> Dict:
+        """
+        Método de compatibilidad para obtener estadísticas
+        Alias para get_statistics()
+        """
+        stats = self.get_statistics()
+        
+        # Formato compatible con el código existente
+        return {
+            'total_signals': sum(self.daily_trades.values()),
+            'shown_signals': sum(self.daily_trades.values()),  # Simplificado por ahora
+            'rejected_signals': 0,  # Se calculará cuando tengamos más datos
+            'daily_count': stats['current_daily_count'],
+            'period_count': stats['current_period_count'],
+            'recent_signals': stats['recent_signals_count'],
+            'filters_config': stats['config']
+        }
 
 # Instancia global del sistema de filtros
 consolidated_filters = ConsolidatedFilters()

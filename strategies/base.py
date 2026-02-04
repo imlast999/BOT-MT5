@@ -136,6 +136,63 @@ class BaseStrategy(ABC):
             logger.warning(f"Error calculando tamaño de posición: {e}")
             return {'lot_size': 0.01, 'risk_amount': 0, 'sl_pips': 0, 'pip_value': 0}
     
+    def evaluate_signal(self, df: pd.DataFrame, config: Dict = None) -> Optional[Dict]:
+        """
+        Evalúa señal completa con indicadores y setup.
+        Método de compatibilidad que combina add_indicators + detect_setup.
+        
+        Args:
+            df: DataFrame con datos OHLCV
+            config: Configuración específica (opcional)
+            
+        Returns:
+            Dict con resultado de evaluación o None si no hay señal
+            
+        Formato de retorno:
+        {
+            'signal_found': bool,
+            'signal': Dict,  # Señal detectada
+            'confidence': str,  # Nivel de confianza estimado
+            'score': float  # Score numérico (0-1)
+        }
+        """
+        try:
+            # Validar datos
+            if not self.validate_data(df):
+                return None
+            
+            # Añadir indicadores
+            df_with_indicators = self.add_indicators(df, config)
+            
+            # Detectar setup
+            signal = self.detect_setup(df_with_indicators, config)
+            
+            if not signal:
+                return None
+            
+            # Calcular confianza básica basada en setup_strength
+            setup_strength = signal.get('setup_strength', 0.5)
+            
+            if setup_strength >= 0.8:
+                confidence = 'HIGH'
+            elif setup_strength >= 0.6:
+                confidence = 'MEDIUM-HIGH'
+            elif setup_strength >= 0.4:
+                confidence = 'MEDIUM'
+            else:
+                confidence = 'LOW'
+            
+            return {
+                'signal_found': True,
+                'signal': signal,
+                'confidence': confidence,
+                'score': setup_strength
+            }
+            
+        except Exception as e:
+            logger.error(f"Error evaluating signal in {self.name}: {e}")
+            return None
+    
     # ========================================================================
     # INDICADORES TÉCNICOS COMUNES
     # ========================================================================

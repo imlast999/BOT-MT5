@@ -40,6 +40,9 @@ from .risk import (
     create_risk_manager
 )
 
+# Aliases for compatibility
+get_engine = get_trading_engine
+
 # Instancias globales para compatibilidad
 trading_engine = get_trading_engine()
 scoring_system = get_scoring_system()
@@ -53,6 +56,7 @@ __all__ = [
     'SignalResult',
     'BotState',
     'get_trading_engine',
+    'get_engine',  # Alias
     'trading_engine',
     
     # Scoring

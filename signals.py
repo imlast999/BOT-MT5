@@ -15,34 +15,27 @@ import pandas as pd
 
 # Imports del core refactorizado
 from core.engine import get_trading_engine
-from strategies.eurusd import create_eurusd_strategy
-from strategies.xauusd import create_xauusd_strategy
 
-# Import opcional de BTCEUR
-try:
-    from strategies.btceur import create_btceur_strategy
-    BTCEUR_AVAILABLE = True
-except ImportError:
-    BTCEUR_AVAILABLE = False
-    def create_btceur_strategy():
-        """Fallback para BTCEUR"""
-        return create_eurusd_strategy()  # Usar EURUSD como fallback
+# Import usando el nuevo sistema de estrategias
+from strategies import get_strategy
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
 # Registry de estrategias disponibles
 STRATEGY_REGISTRY = {
-    'ema50_200': lambda: create_eurusd_strategy(advanced=False),
-    'eurusd': lambda: create_eurusd_strategy(advanced=False),
-    'eurusd_advanced': lambda: create_eurusd_strategy(advanced=True),
-    'xauusd': lambda: create_xauusd_strategy(),
-    'xauusd_advanced': lambda: create_xauusd_strategy(advanced=True),
-    'btceur': lambda: create_btceur_strategy(),
-    'btcusdt': lambda: create_btceur_strategy(),  # Alias
+    'ema50_200': lambda: get_strategy('EURUSD'),
+    'eurusd': lambda: get_strategy('EURUSD'),
+    'eurusd_advanced': lambda: get_strategy('EURUSD'),
+    'xauusd': lambda: get_strategy('XAUUSD'),
+    'xauusd_advanced': lambda: get_strategy('XAUUSD'),
+    'btceur': lambda: get_strategy('BTCEUR'),  # Will fallback to EURUSD if not available
+    'btcusdt': lambda: get_strategy('BTCEUR'),  # Will fallback to EURUSD if not available
     
     # Estrategias genéricas (fallback)
-    'rsi': lambda: create_eurusd_strategy(advanced=False),  # Usar EURUSD como fallback
-    'macd': lambda: create_eurusd_strategy(advanced=False),  # Usar EURUSD como fallback
+    'rsi': lambda: get_strategy('EURUSD'),  # Usar EURUSD como fallback
+    'macd': lambda: get_strategy('EURUSD'),  # Usar EURUSD como fallback
 }
 
 def detect_signal(df: pd.DataFrame, strategy: str = 'ema50_200', config: dict = None) -> Tuple[Optional[Dict], pd.DataFrame]:

@@ -271,6 +271,26 @@ class IntelligentLogger:
                 "ERROR", "COMMAND"
             )
     
+    def command_used(self, user_id: int, command_details: str, success: bool = True):
+        """
+        Método de compatibilidad para logging de comandos
+        
+        Args:
+            user_id: ID del usuario que ejecutó el comando
+            command_details: Detalles del comando ejecutado
+            success: Si el comando fue exitoso
+        """
+        if success:
+            self.log_important_event(
+                f"🎮 COMMAND: {command_details} | User: {user_id}",
+                "INFO", "COMMAND"
+            )
+        else:
+            self.log_important_event(
+                f"❌ COMMAND FAILED: {command_details} | User: {user_id}",
+                "ERROR", "COMMAND"
+            )
+    
     def log_trading_action(self, action: str, symbol: str, details: Dict = None):
         """Log específico para acciones de trading"""
         details_str = ""

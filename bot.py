@@ -1,5 +1,17 @@
 import os
 import logging
+import signal
+import sys
+
+# Add signal handler for graceful shutdown
+def signal_handler(signum, frame):
+    """Handle Ctrl+C gracefully"""
+    print("\n🛑 Señal de interrupción recibida. Cerrando bot...")
+    sys.exit(0)
+
+# Register signal handler
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 # Parche para compatibilidad con Python 3.13
 import audioop_patch
@@ -260,9 +272,9 @@ AUTOSIGNAL_TOLERANCE_PIPS = float(os.getenv('AUTOSIGNAL_TOLERANCE_PIPS', '1.0'))
 DB_PATH = os.path.join(os.path.dirname(__file__), 'bot_state.db')
 # default strategy name (can be overridden via .env)
 DEFAULT_STRATEGY = os.getenv('DEFAULT_STRATEGY', 'ema50_200')
-# default autosignal symbols: EURUSD and XAUUSD; BTCUSDT can be added via env
+# default autosignal symbols: EURUSD and XAUUSD; BTCEUR can be added via env
 if not AUTOSIGNAL_SYMBOLS or AUTOSIGNAL_SYMBOLS == ['']:
-    AUTOSIGNAL_SYMBOLS = ['EURUSD', 'XAUUSD']
+    AUTOSIGNAL_SYMBOLS = ['EURUSD', 'XAUUSD']  # Removed BTCEUR due to strategy issues
 
 # parse per-symbol rules from env, format: EURUSD:ema,XAUUSD:macd
 _rules_raw = os.getenv('AUTOSIGNAL_RULES', '')
@@ -483,9 +495,10 @@ async def on_ready():
             'SIGNALS_CHANNEL_NAME': SIGNALS_CHANNEL_NAME,
             'MAX_TRADES_PER_DAY': MAX_TRADES_PER_DAY,
             'MAX_TRADES_PER_PERIOD': MAX_TRADES_PER_PERIOD,
-            'KILL_SWITCH': KILL_SWITCH
+            'KILL_SWITCH': KILL_SWITCH,
+            'AUTO_EXECUTE_SIGNALS': AUTO_EXECUTE_SIGNALS
         })
-        bot.loop.create_task(autosignals_service.start_loop())
+        bot.loop.create_task(autosignals_service.start_auto_signal_loop())
         log_event("Servicio de autosignals iniciado")
     except Exception as e:
         log_event(f"Error iniciando servicio de autosignals: {e}", "ERROR")
@@ -509,8 +522,8 @@ async def on_ready():
         log_event(f"Error iniciando dashboard inteligente: {e}", "ERROR")
         logger.exception("Failed to start enhanced dashboard")
     
-    # start reconnection system
-    if RECONNECTION_AVAILABLE:
+    # start reconnection system - DISABLED temporarily due to freezing issues
+    if RECONNECTION_AVAILABLE and False:  # Disabled
         try:
             # Configurar callbacks
             async def on_mt5_reconnect():
@@ -534,6 +547,8 @@ async def on_ready():
         except Exception as e:
             log_event(f"Error iniciando sistema de reconexión: {e}", "ERROR")
             logger.exception("Failed to start reconnection system")
+    else:
+        log_event("Sistema de reconexión DESHABILITADO temporalmente", "WARNING")
     
     # Print helpful invite URL for adding the bot with application commands scope
     try:

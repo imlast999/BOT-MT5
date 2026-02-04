@@ -108,11 +108,94 @@ class DashboardService:
                 self.update_thread = threading.Thread(target=self._update_loop, daemon=True)
                 self.update_thread.start()
                 
+                # Iniciar servidor web
+                self._start_web_server()
+                
                 logger.info("Dashboard service started successfully")
                 
         except Exception as e:
             logger.error(f"Error starting dashboard service: {e}")
             self.is_running = False
+    
+    def _start_web_server(self):
+        """Inicia el servidor web del dashboard"""
+        try:
+            # Check if dashboard is disabled via environment variable
+            if os.getenv('DISABLE_DASHBOARD', '0') == '1':
+                logger.info("Dashboard disabled via DISABLE_DASHBOARD environment variable")
+                return
+            
+            import threading
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            import json
+            
+            dashboard_service = self
+            
+            class DashboardHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    try:
+                        if self.path == '/' or self.path == '/dashboard':
+                            # Servir HTML del dashboard
+                            html_content = dashboard_service.get_dashboard_html()
+                            self.send_response(200)
+                            self.send_header('Content-type', 'text/html; charset=utf-8')
+                            self.end_headers()
+                            self.wfile.write(html_content.encode('utf-8'))
+                            
+                        elif self.path == '/api/metrics':
+                            # API JSON de métricas
+                            metrics = dashboard_service.get_current_metrics()
+                            self.send_response(200)
+                            self.send_header('Content-type', 'application/json')
+                            self.send_header('Access-Control-Allow-Origin', '*')
+                            self.end_headers()
+                            self.wfile.write(json.dumps(metrics, indent=2).encode('utf-8'))
+                            
+                        elif self.path.startswith('/api/history'):
+                            # API de historial
+                            history = dashboard_service.get_signal_history(hours=24)
+                            self.send_response(200)
+                            self.send_header('Content-type', 'application/json')
+                            self.send_header('Access-Control-Allow-Origin', '*')
+                            self.end_headers()
+                            self.wfile.write(json.dumps(history, indent=2).encode('utf-8'))
+                            
+                        else:
+                            # 404 para otras rutas
+                            self.send_response(404)
+                            self.send_header('Content-type', 'text/html')
+                            self.end_headers()
+                            self.wfile.write(b'<html><body><h1>404 Not Found</h1></body></html>')
+                            
+                    except Exception as e:
+                        logger.error(f"Error handling web request: {e}")
+                        self.send_response(500)
+                        self.send_header('Content-type', 'text/html')
+                        self.end_headers()
+                        self.wfile.write(f'<html><body><h1>500 Error</h1><p>{str(e)}</p></body></html>'.encode('utf-8'))
+                
+                def log_message(self, format, *args):
+                    # Suprimir logs de HTTP server para reducir ruido
+                    pass
+            
+            # Configurar servidor
+            port = int(os.getenv('DASHBOARD_PORT', '8080'))
+            server_address = ('', port)
+            
+            def run_server():
+                try:
+                    httpd = HTTPServer(server_address, DashboardHandler)
+                    logger.info(f"Dashboard web server started on http://localhost:{port}")
+                    httpd.serve_forever()
+                except Exception as e:
+                    logger.error(f"Error running web server: {e}")
+            
+            # Iniciar servidor en hilo separado
+            server_thread = threading.Thread(target=run_server, daemon=True)
+            server_thread.start()
+            
+        except Exception as e:
+            logger.error(f"Error starting web server: {e}")
     
     def stop(self):
         """Detiene el servicio de dashboard"""
@@ -249,7 +332,42 @@ class DashboardService:
                 
         except Exception as e:
             logger.error(f"Error getting current metrics: {e}")
-            return {'error': str(e)}
+            # Return safe default metrics structure instead of just error
+            return {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'uptime_seconds': 0,
+                'uptime_formatted': '0s',
+                'system_status': 'ERROR',
+                
+                # Métricas de señales
+                'signals': {
+                    'today': 0,
+                    'shown': 0,
+                    'executed': 0,
+                    'rejected': 0,
+                    'show_rate': 0.0,
+                    'execution_rate': 0.0,
+                    'last_signal_time': None
+                },
+                
+                # Métricas por símbolo
+                'symbols': {
+                    'activity': {},
+                    'performance': {}
+                },
+                
+                # Distribución de confianza
+                'confidence_distribution': {},
+                
+                # Métricas de trading
+                'trading': {
+                    'positions_open': 0,
+                    'total_profit': 0.0,
+                    'win_rate': 0.0
+                },
+                
+                'error': str(e)
+            }
     
     def get_signal_history(self, hours: int = 24, symbol: str = None) -> List[Dict]:
         """
@@ -328,164 +446,90 @@ class DashboardService:
             HTML string del dashboard
         """
         try:
-            metrics = self.get_current_metrics()
-            signal_history = self.get_signal_history(hours=6)  # Últimas 6 horas
+            # Get metrics with error handling
+            try:
+                metrics = self.get_current_metrics()
+            except Exception as e:
+                logger.error(f"Error getting metrics: {e}")
+                return "<html><body><h1>Dashboard Error</h1><p>Error getting metrics: " + str(e) + "</p></body></html>"
             
-            html_template = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Trading Bot Dashboard</title>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <style>
-                    body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-                    .container { max-width: 1200px; margin: 0 auto; }
-                    .card { background: white; padding: 20px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-                    .metric { display: inline-block; margin: 10px 20px 10px 0; }
-                    .metric-value { font-size: 24px; font-weight: bold; color: #2196F3; }
-                    .metric-label { font-size: 12px; color: #666; }
-                    .status-running { color: #4CAF50; }
-                    .status-error { color: #F44336; }
-                    .signal-item { padding: 8px; margin: 4px 0; border-left: 4px solid #ddd; background: #f9f9f9; }
-                    .signal-buy { border-left-color: #4CAF50; }
-                    .signal-sell { border-left-color: #F44336; }
-                    .confidence-high { color: #4CAF50; font-weight: bold; }
-                    .confidence-medium { color: #FF9800; }
-                    .confidence-low { color: #F44336; }
-                    .refresh-info { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
-                </style>
-                <script>
-                    setTimeout(function() { location.reload(); }, 30000); // Auto-refresh cada 30s
-                </script>
-            </head>
-            <body>
-                <div class="container">
-                    <h1>🤖 Trading Bot Dashboard</h1>
-                    
-                    <div class="card">
-                        <h2>📊 Estado del Sistema</h2>
-                        <div class="metric">
-                            <div class="metric-value status-running">{system_status}</div>
-                            <div class="metric-label">Estado</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">{uptime_formatted}</div>
-                            <div class="metric-label">Tiempo Activo</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">{last_signal}</div>
-                            <div class="metric-label">Última Señal</div>
-                        </div>
-                    </div>
-                    
-                    <div class="card">
-                        <h2>🎯 Métricas de Señales</h2>
-                        <div class="metric">
-                            <div class="metric-value">{signals_today}</div>
-                            <div class="metric-label">Señales Hoy</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">{signals_shown}</div>
-                            <div class="metric-label">Mostradas</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">{signals_executed}</div>
-                            <div class="metric-label">Ejecutadas</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">{show_rate:.1f}%</div>
-                            <div class="metric-label">Tasa Mostradas</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">{execution_rate:.1f}%</div>
-                            <div class="metric-label">Tasa Ejecución</div>
-                        </div>
-                    </div>
-                    
-                    <div class="card">
-                        <h2>💹 Métricas de Trading</h2>
-                        <div class="metric">
-                            <div class="metric-value">{positions_open}</div>
-                            <div class="metric-label">Posiciones Abiertas</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">{total_profit:.2f} EUR</div>
-                            <div class="metric-label">Profit Total</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">{win_rate:.1f}%</div>
-                            <div class="metric-label">Win Rate</div>
-                        </div>
-                    </div>
-                    
-                    <div class="card">
-                        <h2>📈 Actividad por Símbolo</h2>
-                        {symbol_activity}
-                    </div>
-                    
-                    <div class="card">
-                        <h2>🕐 Historial de Señales (Últimas 6h)</h2>
-                        {signal_history_html}
-                    </div>
-                    
-                    <div class="refresh-info">
-                        Actualizado: {timestamp}<br>
-                        Auto-refresh cada 30 segundos
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
-            
-            # Formatear datos para el template
-            last_signal = "Nunca" if not metrics['signals']['last_signal_time'] else \
-                         datetime.fromisoformat(metrics['signals']['last_signal_time'].replace('Z', '+00:00')).strftime('%H:%M:%S')
-            
-            # Generar HTML de actividad por símbolo
-            symbol_activity_html = ""
-            for symbol, count in metrics['symbols']['activity'].items():
-                symbol_activity_html += f'<div class="metric"><div class="metric-value">{count}</div><div class="metric-label">{symbol}</div></div>'
-            
-            # Generar HTML de historial de señales
-            signal_history_html = ""
-            for signal in signal_history[-20:]:  # Últimas 20 señales
-                css_class = f"signal-item signal-{signal['signal_type'].lower()}"
-                confidence_class = f"confidence-{signal['confidence'].lower().replace('-', '')}"
-                
-                time_str = datetime.fromisoformat(signal['timestamp'].replace('Z', '+00:00')).strftime('%H:%M:%S')
-                status = "✅ Ejecutada" if signal['executed'] else ("👁️ Mostrada" if signal['shown'] else f"❌ {signal['rejection_reason']}")
-                
-                signal_history_html += f"""
-                <div class="{css_class}">
-                    <strong>{time_str}</strong> - {signal['symbol']} {signal['signal_type']} 
-                    (<span class="{confidence_class}">{signal['confidence']}</span>) - {status}
-                </div>
-                """
-            
-            # Rellenar template
-            html = html_template.format(
-                system_status=metrics['system_status'],
-                uptime_formatted=metrics['uptime_formatted'],
-                last_signal=last_signal,
-                signals_today=metrics['signals']['today'],
-                signals_shown=metrics['signals']['shown'],
-                signals_executed=metrics['signals']['executed'],
-                show_rate=metrics['signals']['show_rate'],
-                execution_rate=metrics['signals']['execution_rate'],
-                positions_open=metrics['trading']['positions_open'],
-                total_profit=metrics['trading']['total_profit'],
-                win_rate=metrics['trading']['win_rate'],
-                symbol_activity=symbol_activity_html,
-                signal_history_html=signal_history_html,
-                timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            )
+            # Build HTML using string concatenation to avoid f-string formatting issues
+            html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Trading Bot Dashboard</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { background: white; padding: 20px; margin: 10px 0; border-radius: 8px; }
+        .metric { display: inline-block; margin: 10px 20px 10px 0; }
+        .metric-value { font-size: 24px; font-weight: bold; color: #2196F3; }
+        .metric-label { font-size: 12px; color: #666; }
+    </style>
+    <script>
+        setTimeout(function() { location.reload(); }, 30000);
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Trading Bot Dashboard</h1>
+        
+        <div class="card">
+            <h2>📊 Estado del Sistema</h2>
+            <div class="metric">
+                <div class="metric-value">""" + str(metrics.get('system_status', 'UNKNOWN')) + """</div>
+                <div class="metric-label">Estado</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">""" + str(metrics.get('uptime_formatted', '0s')) + """</div>
+                <div class="metric-label">Tiempo Activo</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>🎯 Métricas de Señales</h2>
+            <div class="metric">
+                <div class="metric-value">""" + str(metrics.get('signals', {}).get('today', 0)) + """</div>
+                <div class="metric-label">Señales Hoy</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">""" + str(metrics.get('signals', {}).get('shown', 0)) + """</div>
+                <div class="metric-label">Mostradas</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">""" + str(metrics.get('signals', {}).get('executed', 0)) + """</div>
+                <div class="metric-label">Ejecutadas</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>💹 Métricas de Trading</h2>
+            <div class="metric">
+                <div class="metric-value">""" + str(metrics.get('trading', {}).get('positions_open', 0)) + """</div>
+                <div class="metric-label">Posiciones Abiertas</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">""" + "{:.2f}".format(metrics.get('trading', {}).get('total_profit', 0.0)) + """ EUR</div>
+                <div class="metric-label">Profit Total</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <p>Actualizado: """ + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</p>
+            <p>Auto-refresh cada 30 segundos</p>
+        </div>
+    </div>
+</body>
+</html>"""
             
             return html
             
         except Exception as e:
             logger.error(f"Error generating dashboard HTML: {e}")
-            return f"<html><body><h1>Dashboard Error</h1><p>{str(e)}</p></body></html>"
+            # Return a very simple error page using string concatenation
+            return ("<html><body><h1>Dashboard Error</h1><p>Error: " + 
+                   str(e) + "</p><p>Time: " + str(datetime.now()) + "</p></body></html>")
     
     def _update_signal_metrics(self, event: SignalEvent):
         """Actualiza métricas basadas en un evento de señal"""
