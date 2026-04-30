@@ -3,7 +3,6 @@
 *.env
 mt5_credentials.enc
 mt5_key.key
-secrets_store.py
 
 # ── Datos de sesión (locales, no compartir) ───────────────────────────────────
 bot_state.db
