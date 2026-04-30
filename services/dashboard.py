@@ -54,12 +54,18 @@ class SignalEvent:
     entry: Optional[float] = None
     sl: Optional[float] = None
     tp: Optional[float] = None
+    # Estado persistente — una vez WIN/LOSS no cambia aunque MT5 no responda
+    final_status: Optional[str] = None   # None | 'win' | 'loss' | 'open'
+    # P&L simulado en tiempo real (actualizado por el background loop)
+    current_price: Optional[float] = None
+    unrealized_pnl: Optional[float] = None   # en % del riesgo
 
 
 class DashboardService:
 
     def __init__(self):
         self.start_time = datetime.now(timezone.utc)
+        self.session_start = datetime.now(timezone.utc)   # inicio de esta sesión
         self.metrics = DashboardMetrics()
         self.signal_history = deque(maxlen=2000)
         self.performance_history = deque(maxlen=200)
@@ -240,10 +246,14 @@ class DashboardService:
                     'uptime_formatted': '0s', 'uptime_seconds': 0,
                     'timestamp': datetime.now(timezone.utc).isoformat()}
 
-    def get_signal_history(self, hours: int = 168, symbol: str = None) -> List[Dict]:
+    def get_signal_history(self, hours: int = 168, symbol: str = None,
+                           session_only: bool = False) -> List[Dict]:
         try:
             with self.lock:
                 cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+                # Si session_only, solo señales desde que arrancó esta sesión
+                if session_only:
+                    cutoff = max(cutoff, self.session_start)
                 result = []
                 for ev in self.signal_history:
                     if ev.timestamp < cutoff:
@@ -257,6 +267,9 @@ class DashboardService:
                         'score': ev.score, 'shown': ev.shown, 'executed': ev.executed,
                         'rejection_reason': ev.rejection_reason,
                         'entry': ev.entry, 'sl': ev.sl, 'tp': ev.tp,
+                        'final_status': ev.final_status,
+                        'current_price': ev.current_price,
+                        'unrealized_pnl': ev.unrealized_pnl,
                     })
                 return result
         except Exception as e:
@@ -303,7 +316,8 @@ class DashboardService:
     def get_dashboard_html(self) -> str:
         try:
             metrics   = self.get_current_metrics()
-            history   = self.get_signal_history(hours=168)
+            history   = self.get_signal_history(hours=168)          # para CSV/export
+            session_history = self.get_signal_history(hours=24, session_only=True)  # solo sesión actual para tabla
             cb_status = {}
             try:
                 from core.circuit_breaker import get_circuit_breaker
@@ -346,16 +360,16 @@ class DashboardService:
                 pass
 
             equity = balance; wins_n = losses_n = open_n = 0; eq_pts = [balance]
-            for ev in history:
-                st = sig_status(ev)
+            for ev in session_history:
+                fs = ev.get('final_status')
                 entry = ev.get('entry'); sl = ev.get('sl'); tp = ev.get('tp')
-                if st == 'win':
+                if fs == 'win':
                     wins_n += 1
                     rr = abs(tp-entry)/abs(entry-sl) if entry and sl and tp and abs(entry-sl)>0 else 1
                     equity += equity * risk_pct * rr
-                elif st == 'loss':
+                elif fs == 'loss':
                     losses_n += 1; equity -= equity * risk_pct
-                elif st == 'open':
+                elif fs == 'open':
                     open_n += 1
                 eq_pts.append(equity)
 
@@ -390,7 +404,7 @@ class DashboardService:
             }
 
             recent_rows = ""
-            for ev in reversed(history[-50:]):
+            for ev in reversed(session_history[-50:]):
                 ts = ev['timestamp'][:16].replace('T', ' ')
                 sym = ev['symbol']; stype = ev['signal_type']; conf = ev['confidence']
                 shown = "✅" if ev['shown'] else "—"
@@ -401,18 +415,38 @@ class DashboardService:
                 elif sym == 'XAUUSD': fmt = lambda v: f"{v:.2f}"  if v is not None else "—"
                 else:                 fmt = lambda v: f"{v:.0f}"   if v is not None else "—"
                 rr_str = (f"{abs(tp-entry)/abs(entry-sl):.1f}" if entry and sl and tp and abs(entry-sl)>0 else "—")
-                st_html = status_map.get(sig_status(ev), status_map['pending'])
+
+                # Estado persistente — usa final_status guardado, no recalcula
+                fs = ev.get('final_status')
+                if fs == 'win':
+                    st_html = '<span style="color:#3fb950;font-weight:600">WIN ✅</span>'
+                elif fs == 'loss':
+                    st_html = '<span style="color:#f85149;font-weight:600">LOSS ❌</span>'
+                elif fs == 'open':
+                    # Mostrar P&L en tiempo real para posiciones abiertas
+                    pnl = ev.get('unrealized_pnl')
+                    cur = ev.get('current_price')
+                    if pnl is not None and cur is not None:
+                        pnl_color = '#3fb950' if pnl >= 0 else '#f85149'
+                        pnl_sign  = '+' if pnl >= 0 else ''
+                        st_html = (f'<span style="color:{pnl_color}">OPEN '
+                                   f'{pnl_sign}{pnl:.0f}%</span>')
+                    else:
+                        st_html = '<span style="color:#d29922">OPEN ⏳</span>'
+                else:
+                    st_html = '<span style="color:#8b949e">—</span>'
+
                 recent_rows += (f'<tr><td>{ts}</td><td class="sym">{sym}</td>'
                                  f'<td class="{dc}">{stype}</td><td class="{cc}">{conf}</td>'
                                  f'<td>{fmt(entry)}</td><td style="color:var(--red)">{fmt(sl)}</td>'
                                  f'<td style="color:var(--green)">{fmt(tp)}</td>'
                                  f'<td>{rr_str}</td><td>{st_html}</td><td>{shown}</td></tr>\n')
             if not recent_rows:
-                recent_rows = '<tr><td colspan="10" class="empty">Sin señales registradas aún</td></tr>'
+                recent_rows = '<tr><td colspan="10" class="empty">Sin señales en esta sesión aún</td></tr>'
 
             sig = metrics.get('signals', {}); trd = metrics.get('trading', {})
             sp  = metrics.get('symbols', {}).get('performance', {})
-            s_today = sig.get('today', 0); s_shown = sig.get('shown', 0)
+            s_today = sig.get('today', 0); s_shown = len(session_history)
             s_rate  = f"{sig.get('show_rate',0):.0f}%"
             pos_open = trd.get('positions_open', 0); t_profit = trd.get('total_profit', 0.0)
             p_color = '#3fb950' if t_profit >= 0 else '#f85149'
@@ -538,7 +572,7 @@ tr:last-child td{{border-bottom:none}}tr:hover td{{background:rgba(88,166,255,.0
 
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <div class="section-title" style="margin-bottom:0">Señales recientes (últimas 7 días · últimas 50)</div>
+    <div class="section-title" style="margin-bottom:0">Señales de esta sesión (P&amp;L en tiempo real)</div>
     <a href="/api/export" class="export-btn" download>⬇ CSV</a>
   </div>
   <table>
@@ -586,12 +620,64 @@ tr:last-child td{{border-bottom:none}}tr:hover td{{background:rgba(88,166,255,.0
         while self.is_running:
             try:
                 self._cleanup_old_data()
+                self._update_simulated_positions()   # actualizar P&L en tiempo real
                 if self.dashboard_config['enable_persistence']:
                     self._save_persisted_data()
                 time.sleep(self.dashboard_config['update_interval'])
             except Exception as e:
                 logger.error(f"Dashboard update loop error: {e}")
                 time.sleep(5)
+
+    def _update_simulated_positions(self):
+        """
+        Actualiza el estado y P&L de cada señal abierta consultando MT5.
+        Una vez que una señal llega a WIN o LOSS, el estado queda fijo.
+        """
+        try:
+            import MetaTrader5 as mt5
+            with self.lock:
+                for ev in self.signal_history:
+                    # Si ya está cerrada, no recalcular
+                    if ev.final_status in ('win', 'loss'):
+                        continue
+                    if not (ev.entry and ev.sl and ev.tp and ev.shown):
+                        continue
+
+                    tick = mt5.symbol_info_tick(ev.symbol)
+                    if not tick:
+                        continue
+
+                    price = (tick.bid + tick.ask) / 2
+                    ev.current_price = price
+                    self.last_mt5_update = datetime.now(timezone.utc)
+
+                    # Calcular P&L no realizado como % del riesgo
+                    risk = abs(ev.entry - ev.sl)
+                    if risk > 0:
+                        if ev.signal_type == 'BUY':
+                            move = price - ev.entry
+                        else:
+                            move = ev.entry - price
+                        ev.unrealized_pnl = (move / risk) * 100   # % del riesgo
+
+                    # Verificar si tocó TP o SL — estado permanente
+                    if ev.signal_type == 'BUY':
+                        if price >= ev.tp:
+                            ev.final_status = 'win'
+                        elif price <= ev.sl:
+                            ev.final_status = 'loss'
+                        else:
+                            ev.final_status = 'open'
+                    else:
+                        if price <= ev.tp:
+                            ev.final_status = 'win'
+                        elif price >= ev.sl:
+                            ev.final_status = 'loss'
+                        else:
+                            ev.final_status = 'open'
+
+        except Exception as e:
+            logger.debug(f"Simulated positions update error: {e}")
 
     def _cleanup_old_data(self):
         try:
@@ -620,7 +706,10 @@ tr:last-child td{{border-bottom:none}}tr:hover td{{background:rgba(88,166,255,.0
                  'confidence': ev.confidence, 'score': ev.score,
                  'shown': ev.shown, 'executed': ev.executed,
                  'rejection_reason': ev.rejection_reason,
-                 'entry': ev.entry, 'sl': ev.sl, 'tp': ev.tp}
+                 'entry': ev.entry, 'sl': ev.sl, 'tp': ev.tp,
+                 'final_status': ev.final_status,
+                 'current_price': ev.current_price,
+                 'unrealized_pnl': ev.unrealized_pnl}
                 for ev in self.signal_history
             ]
             data = {
@@ -676,6 +765,9 @@ tr:last-child td{{border-bottom:none}}tr:hover td{{background:rgba(88,166,255,.0
                         shown=bool(ev_data.get('shown',False)), executed=bool(ev_data.get('executed',False)),
                         rejection_reason=ev_data.get('rejection_reason'),
                         entry=ev_data.get('entry'), sl=ev_data.get('sl'), tp=ev_data.get('tp'),
+                        final_status=ev_data.get('final_status'),
+                        current_price=ev_data.get('current_price'),
+                        unrealized_pnl=ev_data.get('unrealized_pnl'),
                     ))
                 except Exception:
                     pass
