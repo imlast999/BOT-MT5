@@ -1,12 +1,12 @@
 {
   "EURUSD": {
-    "strategy": "eurusd_simple",
-    "fallback_strategy": "eurusd_advanced",
+    "strategy": "eurusd_asian_breakout",
+    "fallback_strategy": "eurusd_simple",
     "enabled": true,
-    "risk_per_trade": 1.0,
+    "risk_per_trade": 0.75,
     "max_daily_trades": 4,
     "min_rr_ratio": 1.5,
-    "min_score": 0.66,
+    "min_score": 0.60,
     "expires_minutes": 30,
     "active_sessions": ["london", "newyork", "overlap"],
     "avoid_news": true,
@@ -16,17 +16,23 @@
     "priority": "HIGH",
     "use_fallback": true,
     "use_emergency_fallback": true,
-    "simplified_system": true
+    "simplified_system": true,
+    "cooldown_bars": 10,
+    "confidence_thresholds": {
+      "medium": 0.60,
+      "high": 0.75,
+      "very_high": 0.85
+    }
   },
 
   "XAUUSD": {
     "strategy": "xauusd_simple", 
     "fallback_strategy": "xauusd_advanced",
     "enabled": true,
-    "risk_per_trade": 0.8,
+    "risk_per_trade": 0.6,
     "max_daily_trades": 3,
     "min_rr_ratio": 2.0,
-    "min_score": 0.60,
+    "min_score": 0.55,
     "expires_minutes": 45,
     "active_sessions": ["london", "newyork", "overlap"],
     "avoid_news": true,
@@ -37,17 +43,23 @@
     "priority": "HIGH",
     "use_fallback": true,
     "use_emergency_fallback": true,
-    "simplified_system": true
+    "simplified_system": true,
+    "cooldown_bars": 8,
+    "confidence_thresholds": {
+      "medium": 0.55,
+      "high": 0.70,
+      "very_high": 0.80
+    }
   },
 
   "BTCEUR": {
     "strategy": "btceur_simple",
-    "fallback_strategy": "btceur_advanced",
+    "fallback_strategy": "btc_trend_pullback_v1",
     "enabled": true,
-    "risk_per_trade": 0.6,
+    "risk_per_trade": 0.5,
     "max_daily_trades": 5,
     "min_rr_ratio": 1.5,
-    "min_score": 0.65,
+    "min_score": 0.55,
     "expires_minutes": 60,
     "active_sessions": ["all"],
     "avoid_news": false,
@@ -57,7 +69,13 @@
     "priority": "MEDIUM",
     "use_fallback": true,
     "use_emergency_fallback": true,
-    "simplified_system": true
+    "simplified_system": true,
+    "cooldown_bars": 6,
+    "confidence_thresholds": {
+      "medium": 0.55,
+      "high": 0.72,
+      "very_high": 0.85
+    }
   },
 
   "GBPUSD": {

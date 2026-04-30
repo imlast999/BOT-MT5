@@ -43,36 +43,132 @@ class FlexibleScoring:
     """
     
     def __init__(self):
-        # Configuración por símbolo (consolidada)
-        self.symbol_config = {
-            'EURUSD': {
-                'min_score': 0.60, 
-                'show_threshold': 0.50, 
-                'setup_weight': 0.4,
-                'rsi_range': (35, 75),
-                'atr_multiplier': 0.9
-            },
-            'XAUUSD': {
-                'min_score': 0.65, 
-                'show_threshold': 0.60, 
-                'setup_weight': 0.5,
-                'rsi_range': (30, 70),
-                'atr_multiplier': 1.0
-            },
-            'BTCEUR': {
-                'min_score': 0.55, 
-                'show_threshold': 0.45, 
-                'setup_weight': 0.4,
-                'rsi_range': (40, 80),
-                'atr_multiplier': 0.8
-            }
-        }
+        # Cargar configuración desde rules_config.json
+        self._load_config()
         
         # Estadísticas para logging inteligente
         self.stats = defaultdict(int)
         self.rejection_reasons = defaultdict(int)
         self.failed_rules = defaultdict(int)
         self.last_dump = datetime.now()
+    
+    def _load_config(self):
+        """Carga configuración desde rules_config.json"""
+        import json
+        import os
+        
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'rules_config.json')
+            with open(config_path, 'r') as f:
+                rules = json.load(f)
+            
+            # Configuración por símbolo desde archivo
+            self.symbol_config = {}
+            
+            for symbol in ['EURUSD', 'XAUUSD', 'BTCEUR']:
+                symbol_rules = rules.get(symbol, {})
+                
+                # Cargar thresholds de confianza desde config
+                confidence_thresholds = symbol_rules.get('confidence_thresholds', {
+                    'medium': 0.60,
+                    'high': 0.75,
+                    'very_high': 0.85
+                })
+                
+                self.symbol_config[symbol] = {
+                    'min_score': symbol_rules.get('min_score', 0.60),
+                    'show_threshold': confidence_thresholds.get('medium', 0.60),
+                    'setup_weight': 0.4 if symbol in ['EURUSD', 'BTCEUR'] else 0.5,
+                    'rsi_range': (35, 75) if symbol == 'EURUSD' else (30, 70) if symbol == 'XAUUSD' else (40, 80),
+                    'atr_multiplier': 0.9 if symbol == 'EURUSD' else 1.0 if symbol == 'XAUUSD' else 0.8,
+                    'confidence_thresholds': confidence_thresholds
+                }
+            
+            logger.info("✓ Configuración de scoring cargada desde rules_config.json")
+            
+        except Exception as e:
+            logger.warning(f"Error cargando configuración, usando valores por defecto: {e}")
+            # Fallback a configuración por defecto
+            self.symbol_config = {
+                'EURUSD': {
+                    'min_score': 0.60, 
+                    'show_threshold': 0.50, 
+                    'setup_weight': 0.4,
+                    'rsi_range': (35, 75),
+                    'atr_multiplier': 0.9,
+                    'confidence_thresholds': {'medium': 0.60, 'high': 0.75, 'very_high': 0.85}
+                },
+                'XAUUSD': {
+                    'min_score': 0.65, 
+                    'show_threshold': 0.60, 
+                    'setup_weight': 0.5,
+                    'rsi_range': (30, 70),
+                    'atr_multiplier': 1.0,
+                    'confidence_thresholds': {'medium': 0.55, 'high': 0.70, 'very_high': 0.80}
+                },
+                'BTCEUR': {
+                    'min_score': 0.55, 
+                    'show_threshold': 0.45, 
+                    'setup_weight': 0.4,
+                    'rsi_range': (40, 80),
+                    'atr_multiplier': 0.8,
+                    'confidence_thresholds': {'medium': 0.55, 'high': 0.72, 'very_high': 0.85}
+                }
+            }
+    
+    def evaluate_signal_context(self, context) -> ScoringResult:
+        """Evalúa señal usando contexto completo"""
+        from core.engine import SignalContext  # Import local para evitar circular
+        
+        symbol = context.symbol
+        signal = context.raw_signal
+        df = context.dataframe
+        
+        # Extraer confirmaciones del contexto de la señal
+        confirmations = self._extract_confirmations_from_signal(signal, df, symbol)
+        
+        return self.evaluate_signal(symbol, True, confirmations)
+    
+    def _extract_confirmations_from_signal(self, signal: Dict, df: pd.DataFrame, symbol: str) -> List[Tuple[bool, ConfirmationRule]]:
+        """Extrae confirmaciones básicas de una señal"""
+        confirmations = []
+        
+        try:
+            last = df.iloc[-1]
+            
+            # Confirmación 1: RSI en rango operativo
+            if 'rsi' in df.columns:
+                rsi = last['rsi']
+                rsi_ok = 30 <= rsi <= 70
+                confirmations.append((rsi_ok, ConfirmationRule(
+                    "RSI_RANGE", 1.0, f"RSI en rango: {rsi:.1f}"
+                )))
+            
+            # Confirmación 2: ATR adecuado
+            if 'atr' in df.columns:
+                atr_current = last['atr']
+                atr_mean = df['atr'].tail(20).mean()
+                atr_ok = atr_current > atr_mean * 0.8
+                confirmations.append((atr_ok, ConfirmationRule(
+                    "ATR_ADEQUATE", 0.8, f"ATR: {atr_current:.5f} vs {atr_mean:.5f}"
+                )))
+            
+            # Confirmación 3: Dirección de vela
+            direction = signal.get('type', 'BUY')
+            candle_body = last['close'] - last['open']
+            if direction == 'BUY':
+                candle_ok = candle_body > 0
+            else:
+                candle_ok = candle_body < 0
+            
+            confirmations.append((candle_ok, ConfirmationRule(
+                "CANDLE_DIRECTION", 0.6, f"Vela en dirección {direction}"
+            )))
+            
+        except Exception as e:
+            logger.warning(f"Error extrayendo confirmaciones: {e}")
+        
+        return confirmations
     
     def evaluate_signal(self, symbol: str, setup_valid: bool, 
                        confirmations: List[Tuple[bool, ConfirmationRule]]) -> ScoringResult:
@@ -127,8 +223,8 @@ class FlexibleScoring:
         setup_weight = config.get('setup_weight', 0.5)
         final_score = (setup_weight * 1.0) + ((1 - setup_weight) * weighted_score)
         
-        # Determinar confianza
-        confidence_level = self._calculate_confidence_level(final_score)
+        # Determinar confianza usando thresholds configurables
+        confidence_level = self._calculate_confidence_level(final_score, symbol)
         
         # Determinar si mostrar
         show_threshold = config.get('show_threshold', 0.50)
@@ -230,13 +326,20 @@ class FlexibleScoring:
         
         return confirmations
     
-    def _calculate_confidence_level(self, score: float) -> str:
-        """Mapea score numérico a nivel de confianza"""
-        if score >= 0.80:
+    def _calculate_confidence_level(self, score: float, symbol: str = 'EURUSD') -> str:
+        """Mapea score numérico a nivel de confianza usando thresholds configurables"""
+        config = self.symbol_config.get(symbol, self.symbol_config['EURUSD'])
+        thresholds = config.get('confidence_thresholds', {
+            'medium': 0.60,
+            'high': 0.75,
+            'very_high': 0.85
+        })
+        
+        if score >= thresholds.get('very_high', 0.85):
             return 'VERY_HIGH'
-        elif score >= 0.70:
+        elif score >= thresholds.get('high', 0.75):
             return 'HIGH'
-        elif score >= 0.60:
+        elif score >= thresholds.get('medium', 0.60):
             return 'MEDIUM-HIGH'
         elif score >= 0.50:
             return 'MEDIUM'

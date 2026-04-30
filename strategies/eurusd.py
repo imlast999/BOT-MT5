@@ -19,195 +19,207 @@ logger = logging.getLogger(__name__)
 
 class EURUSDStrategy(BaseStrategy):
     """
-    Estrategia EURUSD: Breakout de consolidación con confirmaciones múltiples
+    Estrategia EURUSD SIMPLIFICADA v2: Tendencia confirmada + Retroceso
     
-    Setup Principal:
-    - Breakout de rango de 15 períodos
-    - EMA50 > EMA200 para BUY, EMA50 < EMA200 para SELL
-    
-    Confirmaciones:
-    - RSI en zona operativa (35-75)
-    - ATR por encima de media (volatilidad)
-    - Sin retroceso fuerte después del breakout
+    Mejoras sobre v1:
+    - Filtro EMA200: precio debe estar del lado correcto de la tendencia mayor
+    - Separación mínima EMA20/EMA50: evita mercados laterales
+    - RSI más estricto (45-58): reduce entradas en zonas ambiguas
+    - Confirmación de no-retroceso fuerte
     """
     
     def __init__(self):
-        super().__init__("EURUSD_Breakout")
+        super().__init__("EURUSD_Simple")
     
     def _get_default_config(self) -> Dict:
         return {
-            'ema_fast': 50,
-            'ema_slow': 200,
-            'breakout_periods': 15,
+            'ema_fast': 20,
+            'ema_slow': 50,
+            'ema_trend': 200,
+            'ema_min_separation': 0.0001,    # 0.01% — evita mercados completamente planos
             'rsi_period': 14,
-            'rsi_min': 35,
-            'rsi_max': 75,
+            'rsi_min': 38,                   # Más amplio que 45 para capturar retrocesos reales
+            'rsi_max': 62,                   # Más amplio que 58
             'atr_period': 14,
-            'atr_multiplier': 0.9,
-            'sl_atr_multiplier': 1.2,
-            'tp_atr_multiplier': 2.4,  # R:R = 2.0
+            'price_ema_distance': 0.003,     # 0.3% — ligeramente más tolerante
+            'sl_atr_multiplier': 2.0,   # Subido de 1.5 — aguanta pullbacks en tendencias fuertes
+            'tp_atr_multiplier': 4.0,   # R:R 2.0 con SL 2.0x
             'expires_minutes': 30,
-            'pullback_tolerance': 0.002  # 0.2%
         }
     
     def _add_specific_indicators(self, df: pd.DataFrame, config: Dict) -> pd.DataFrame:
-        """Añade indicadores específicos para EURUSD"""
-        # EMAs para filtro de tendencia
-        df['ema50'] = self._ema(df['close'], config['ema_fast'])
-        df['ema200'] = self._ema(df['close'], config['ema_slow'])
-        
-        # Rangos para breakout
-        df['high_15'] = df['high'].rolling(config['breakout_periods']).max()
-        df['low_15'] = df['low'].rolling(config['breakout_periods']).min()
-        
-        # Indicadores adicionales ya están en la clase base
+        df['ema20']  = self._ema(df['close'], config['ema_fast'])
+        df['ema50']  = self._ema(df['close'], config['ema_slow'])
+        df['ema200'] = self._ema(df['close'], config['ema_trend'])
         return df
     
     def detect_setup(self, df: pd.DataFrame, config: Dict = None) -> Optional[Dict]:
         """
-        Detecta setup de breakout EURUSD
+        Detecta setup de tendencia confirmada + retroceso a EMA20
+
+        Filtros activos:
+        1. EMA20 > EMA50 (tendencia corto plazo)
+        2. Separación mínima EMA20/EMA50 (no lateral)
+        3. Precio del lado correcto de EMA200 (tendencia mayor)
+        4. RSI en zona operativa (no sobreextendido)
+        5. Precio cerca de EMA20 (retroceso, no perseguir)
+        6. Pendiente EMA20 en dirección del trade (momentum activo)
+        7. No más de 2 velas consecutivas en contra (no entrar en impulso adverso)
         """
         cfg = {**self.default_config, **(config or {})}
-        
-        # Validar datos
-        if not self.validate_data(df) or len(df) < cfg['ema_slow']:
+
+        if not self.validate_data(df) or len(df) < cfg['ema_trend']:
+            logger.debug("[EURUSD][REJECT] insufficient_data | len=%d required=%d",
+                        len(df), cfg['ema_trend'])
             return None
-        
-        # Añadir indicadores
+
         df = self.add_indicators(df, cfg)
-        
-        # Datos actuales
-        last = df.iloc[-1]
-        price = float(last['close'])
-        ema50 = float(last['ema50'])
-        ema200 = float(last['ema200'])
-        rsi = float(last['rsi'])
+
+        last  = df.iloc[-1]
+        prev  = df.iloc[-2]
+        prev2 = df.iloc[-3]
+
+        price       = float(last['close'])
+        ema20       = float(last['ema20'])
+        ema50       = float(last['ema50'])
+        ema200      = float(last['ema200'])
+        rsi         = float(last['rsi'])
         atr_current = float(last['atr'])
-        
-        # Calcular ATR medio
-        atr_mean = df['atr'].tail(20).mean()
-        
-        # ========================================================================
-        # SETUP PRINCIPAL: Breakout con filtro de tendencia
-        # ========================================================================
-        
-        # Detectar breakout alcista
-        breakout_up = (
-            price > last['high_15'] and  # Breakout del máximo
-            ema50 > ema200  # Tendencia alcista
-        )
-        
-        # Detectar breakout bajista  
-        breakout_down = (
-            price < last['low_15'] and  # Breakout del mínimo
-            ema50 < ema200  # Tendencia bajista
-        )
-        
-        if not (breakout_up or breakout_down):
+
+        # ── 1. Tendencia EMA20 vs EMA50 ──────────────────────────────────────
+        bullish_trend = ema20 > ema50
+        bearish_trend = ema20 < ema50
+        if not (bullish_trend or bearish_trend):
             return None
-        
-        # Determinar dirección
-        direction = 'BUY' if breakout_up else 'SELL'
-        
-        # ========================================================================
-        # CONFIRMACIONES
-        # ========================================================================
-        
+        direction = 'BUY' if bullish_trend else 'SELL'
+
+        # ── 2. Separación mínima (no lateral) ────────────────────────────────
+        ema_separation = abs(ema20 - ema50) / ema50
+        if ema_separation < cfg['ema_min_separation']:
+            logger.debug("[EURUSD][REJECT] ema_too_close | sep=%.5f", ema_separation)
+            return None
+
+        # ── 3. Filtro EMA200 (tendencia mayor) ───────────────────────────────
+        if direction == 'BUY' and price < ema200:
+            logger.debug("[EURUSD][REJECT] price_below_ema200_for_buy")
+            return None
+        if direction == 'SELL' and price > ema200:
+            logger.debug("[EURUSD][REJECT] price_above_ema200_for_sell")
+            return None
+
+        # ── 4. RSI en zona operativa ──────────────────────────────────────────
+        if not (cfg['rsi_min'] <= rsi <= cfg['rsi_max']):
+            logger.debug("[EURUSD][REJECT] rsi_out_of_range | rsi=%.2f", rsi)
+            return None
+
+        # ── 5. Precio cerca de EMA20 (retroceso, no perseguir) ───────────────
+        distance_to_ema20 = abs(price - ema20) / ema20
+        if distance_to_ema20 > cfg['price_ema_distance']:
+            logger.debug("[EURUSD][REJECT] price_far_from_ema20 | dist=%.4f", distance_to_ema20)
+            return None
+
+        # ── 6. Filtro de volatilidad: no entrar en mercados impulsivos ───────
+        # Si el ATR actual es >1.8x su media, el mercado está en impulso
+        # y los retrocesos a EMA20 suelen ser trampas
+        atr_mean_check = df['atr'].tail(20).mean()
+        if atr_mean_check > 0 and atr_current > atr_mean_check * 1.8:
+            logger.debug("[EURUSD][REJECT] high_volatility_impulse | atr=%.5f mean=%.5f ratio=%.2f",
+                        atr_current, atr_mean_check, atr_current / atr_mean_check)
+            return None
+
+        # ── 7. No entrar si el precio viene de movimiento fuerte en contra ───
+        # Si el precio cayó/subió más de 1.5x ATR en las últimas 5 velas → reversión
+        price_5bars_ago = float(df.iloc[-6]['close'])
+        move_5bars = price - price_5bars_ago
+
+        if direction == 'BUY' and move_5bars < -(atr_current * 1.5):
+            logger.debug("[EURUSD][REJECT] strong_bearish_move_on_buy | move=%.5f", move_5bars)
+            return None
+        if direction == 'SELL' and move_5bars > (atr_current * 1.5):
+            logger.debug("[EURUSD][REJECT] strong_bullish_move_on_sell | move=%.5f", move_5bars)
+            return None
+
+        # ── 8. No entrar con 2 velas consecutivas en contra ──────────────────
+        last_bearish = float(last['close']) < float(last['open'])
+        prev_bearish = float(prev['close']) < float(prev['open'])
+        last_bullish = float(last['close']) > float(last['open'])
+        prev_bullish = float(prev['close']) > float(prev['open'])
+
+        if direction == 'BUY' and last_bearish and prev_bearish:
+            logger.debug("[EURUSD][REJECT] two_consecutive_bearish_candles_on_buy")
+            return None
+        if direction == 'SELL' and last_bullish and prev_bullish:
+            logger.debug("[EURUSD][REJECT] two_consecutive_bullish_candles_on_sell")
+            return None
+
+        # ── CONFIRMACIONES ────────────────────────────────────────────────────
         confirmations = []
-        
-        # Confirmación 1: RSI en zona operativa
-        rsi_ok = cfg['rsi_min'] <= rsi <= cfg['rsi_max']
+
+        candle_ok = float(last['close']) > float(last['open']) if direction == 'BUY' \
+                    else float(last['close']) < float(last['open'])
         confirmations.append({
-            'name': 'RSI_OPERATIVE',
-            'passed': rsi_ok,
-            'value': rsi,
-            'description': f"RSI operativo ({cfg['rsi_min']}-{cfg['rsi_max']}): {rsi:.1f}"
+            'name': 'CANDLE_DIRECTION', 'passed': candle_ok,
+            'value': 1.0 if candle_ok else 0.0,
+            'description': f"Vela en dirección {direction}"
         })
-        
-        # Confirmación 2: ATR por encima de media (volatilidad)
-        atr_high = atr_current > atr_mean * cfg['atr_multiplier']
+
+        atr_mean = df['atr'].tail(20).mean()
+        atr_ok   = atr_current > atr_mean * 0.7
         confirmations.append({
-            'name': 'ATR_HIGH',
-            'passed': atr_high,
+            'name': 'ATR_ADEQUATE', 'passed': atr_ok,
             'value': atr_current / atr_mean if atr_mean > 0 else 0,
-            'description': f"ATR alto: {atr_current:.5f} vs {atr_mean:.5f}"
+            'description': f"ATR adecuado: {atr_current:.5f}"
         })
-        
-        # Confirmación 3: Sin retroceso fuerte
-        if direction == 'BUY':
-            recent_high = df['high'].tail(10).max()
-            no_pullback = price >= recent_high * (1 - cfg['pullback_tolerance'])
-        else:
-            recent_low = df['low'].tail(10).min()
-            no_pullback = price <= recent_low * (1 + cfg['pullback_tolerance'])
-        
-        confirmations.append({
-            'name': 'NO_PULLBACK',
-            'passed': no_pullback,
-            'value': 1.0 if no_pullback else 0.0,
-            'description': f"Sin retroceso fuerte para {direction}"
-        })
-        
-        # ========================================================================
-        # CALCULAR NIVELES
-        # ========================================================================
-        
-        # Distancias basadas en ATR
+
+        # ── NIVELES ───────────────────────────────────────────────────────────
         sl_distance = atr_current * cfg['sl_atr_multiplier']
         tp_distance = atr_current * cfg['tp_atr_multiplier']
-        
+
         if direction == 'BUY':
             sl = price - sl_distance
             tp = price + tp_distance
         else:
             sl = price + sl_distance
             tp = price - tp_distance
-        
-        # ========================================================================
-        # CALCULAR FORTALEZA DEL SETUP
-        # ========================================================================
-        
-        # Contar confirmaciones pasadas
-        passed_confirmations = sum(1 for c in confirmations if c['passed'])
-        total_confirmations = len(confirmations)
-        
-        # Setup strength basado en confirmaciones y separación de EMAs
-        ema_separation = abs(ema50 - ema200) / ema200 if ema200 > 0 else 0
-        confirmation_ratio = passed_confirmations / total_confirmations
-        
-        setup_strength = (confirmation_ratio * 0.7) + (min(ema_separation * 100, 1.0) * 0.3)
-        
-        # ========================================================================
-        # CREAR SEÑAL
-        # ========================================================================
-        
+
+        # ── FORTALEZA ─────────────────────────────────────────────────────────
+        passed_conf  = sum(1 for c in confirmations if c['passed'])
+        conf_ratio   = passed_conf / len(confirmations)
+        ema_strength = min(1.0, ema_separation * 200)
+
+        setup_strength = (conf_ratio * 0.6) + (ema_strength * 0.4)
+
+        # ── SEÑAL ─────────────────────────────────────────────────────────────
         signal = {
             'type': direction,
             'entry': price,
             'sl': sl,
             'tp': tp,
             'timeframe': 'H1',
-            'explanation': f'EURUSD Breakout: {direction} + {passed_confirmations}/{total_confirmations} confirmaciones + R:R {tp_distance/sl_distance:.1f}',
+            'explanation': (f'EURUSD v3: {direction} | EMA200✓ | '
+                           f'sep={ema_separation:.4f} | RSI {rsi:.1f}'),
             'expires': datetime.now(timezone.utc) + timedelta(minutes=cfg['expires_minutes']),
             'setup_strength': setup_strength,
             'context': {
-                'strategy': 'eurusd_breakout',
+                'strategy': 'eurusd_simple',
                 'confirmations': confirmations,
                 'market_conditions': {
-                    'ema50': ema50,
-                    'ema200': ema200,
+                    'ema20': ema20, 'ema50': ema50, 'ema200': ema200,
+                    'ema_trend': direction.lower(),
                     'ema_separation': ema_separation,
                     'rsi': rsi,
+                    'distance_to_ema20': distance_to_ema20,
                     'atr_current': atr_current,
                     'atr_mean': atr_mean,
-                    'volatility_ratio': atr_current / atr_mean if atr_mean > 0 else 1.0
                 },
                 'risk_reward': tp_distance / sl_distance if sl_distance > 0 else 0,
-                'breakout_type': 'high' if breakout_up else 'low',
-                'trend_alignment': True  # Siempre True por el filtro EMA
+                'simple_strategy': True
             }
         }
-        
+
+        logger.info("[EURUSD][SIGNAL] type=%s | price=%.5f | rsi=%.2f | sep=%.4f",
+                   direction, price, rsi, ema_separation)
+
         return signal
 
 

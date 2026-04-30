@@ -16,7 +16,12 @@ from .engine import (
     SignalResult,
     BotState,
     get_trading_engine,
-    get_current_period_start
+    get_current_period_start,
+    active_symbols,
+    is_symbol_active,
+    symbol_health,
+    set_btceur_health,
+    record_signal,
 )
 
 from .scoring import (
@@ -38,6 +43,13 @@ from .risk import (
     RiskAssessment,
     get_risk_manager,
     create_risk_manager
+)
+
+from .replay_engine import (
+    ReplayEngine,
+    ReplaySignal,
+    ReplayStatistics,
+    get_replay_engine
 )
 
 # Aliases for compatibility
@@ -80,6 +92,21 @@ __all__ = [
     'create_risk_manager',
     'risk_manager',
     
+    # Replay Engine
+    'ReplayEngine',
+    'ReplaySignal',
+    'ReplayStatistics',
+    'get_replay_engine',
+    
     # Utilities
-    'get_current_period_start'
+    'get_current_period_start',
+
+    # Símbolos activos
+    'active_symbols',
+    'is_symbol_active',
+
+    # Estado BTCEUR (visibilidad)
+    'symbol_health',
+    'set_btceur_health',
+    'record_signal',
 ]

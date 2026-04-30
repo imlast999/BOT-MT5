@@ -1,92 +1,65 @@
-# Environment variables and sensitive data
+# ── Credenciales y datos sensibles ───────────────────────────────────────────
 .env
 *.env
-credentials.enc
+mt5_credentials.enc
+mt5_key.key
 secrets_store.py
 
-# Python
+# ── Datos de sesión (locales, no compartir) ───────────────────────────────────
+bot_state.db
+dashboard_data.json
+backtest_data.json
+
+# ── Resultados de backtest (CSVs generados localmente) ────────────────────────
+backtest_results/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+logs.txt
+*.log
+
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
-# Virtual environments
+# ── Entornos virtuales ────────────────────────────────────────────────────────
 .venv/
 venv/
 ENV/
 env/
 
-# IDE
+# ── IDEs ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Logs and databases
-*.log
-logs.txt
-logs_*.txt
-logs/
-*.db
-*.sqlite
-*.sqlite3
-bot_state.db
-
-# Temporary files
+# ── Archivos temporales y generados ──────────────────────────────────────────
 *.tmp
 *.temp
 temp/
 tmp/
-
-# Charts and generated files
 chart_*.png
 *.png
 *.jpg
 *.jpeg
-
-# Backup files
-*_backup_*.json
 *.bak
 
-# OS generated files
+# ── Hypothesis (tests de propiedad) ──────────────────────────────────────────
+.hypothesis/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 .DS_Store?
 ._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
-
-# Documentation drafts and internal notes
-*_DRAFT.md
-*_NOTES.md
-CORRECCIONES_*.md
-OPTIMIZATION_*.md
-SISTEMA_*.md
-ESTADO_*.md
-MEJORAS_*.md
-AJUSTES_*.md
-
-# Test files
-test_*.py
-*_test.py
+ehthumbs.db

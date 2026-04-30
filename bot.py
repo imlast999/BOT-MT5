@@ -28,6 +28,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from math import floor
+from typing import Optional
 
 # Configurar logging ANTES de los imports opcionales
 logging.basicConfig(
@@ -46,7 +47,11 @@ from core import (
     get_current_period_start, 
     BotState,
     get_risk_manager,
-    get_filters_system
+    get_filters_system,
+    active_symbols,
+    is_symbol_active,
+    symbol_health,
+    set_btceur_health,
 )
 
 # Services (consolidado)
@@ -66,7 +71,7 @@ from services import (
 from services.logging import get_intelligent_logger
 
 # Signals dispatcher (simplificado)
-from signals import _detect_signal_wrapper
+from signals import _detect_signal_wrapper, detect_signal, detect_signal_advanced
 
 # Módulos específicos que se mantienen
 from mt5_client import initialize as mt5_initialize, get_candles, shutdown as mt5_shutdown, login as mt5_login, place_order
@@ -152,6 +157,40 @@ signals_logger = logging.getLogger('signals')
 signals_logger.setLevel(logging.INFO)  # Mantener info de señales
 
 
+def validate_btceur_strategy() -> bool:
+    """
+    Valida en el arranque que BTCEUR use su estrategia específica.
+    En caso de problema, desactiva BTCEUR en active_symbols y deja
+    trazas claras en los logs.
+    """
+    try:
+        from strategies import get_strategy  # import local para evitar ciclos
+        strat = get_strategy("BTCEUR")
+    except Exception as e:
+        err_msg = f"Error obteniendo estrategia BTCEUR: {e}"
+        log_event(f"[CRITICAL][BTCEUR] {err_msg}", "ERROR")
+        set_btceur_health(status="ERROR", last_error=err_msg)
+        active_symbols["BTCEUR"] = False
+        return False
+
+    if strat is None:
+        err_msg = "Estrategia BTCEUR no disponible (get_strategy devolvió None)."
+        log_event(f"[CRITICAL][BTCEUR] {err_msg}", "ERROR")
+        set_btceur_health(status="ERROR", last_error=err_msg)
+        active_symbols["BTCEUR"] = False
+        return False
+
+    valid_btceur_classes = ('BTCEURStrategy', 'BTCTrendPullbackV1Strategy', 'BTCEURWeeklyBreakoutStrategy')
+    if strat.__class__.__name__ not in valid_btceur_classes:
+        err_msg = f"Estrategia incorrecta: {strat.__class__.__name__} (válidas: {valid_btceur_classes})."
+        log_event(f"[CRITICAL][BTCEUR] {err_msg}", "ERROR")
+        set_btceur_health(status="ERROR", last_error=err_msg)
+        active_symbols["BTCEUR"] = False
+        return False
+
+    set_btceur_health(status="OK", last_error=None)
+    return True
+
 # ======================
 # FUNCIONES DE PERÍODO (12 HORAS)
 # ======================
@@ -234,13 +273,8 @@ def log_discord_command(func):
 # ======================
 # LOGGING SYSTEM
 # ======================
-
-# Usar el logger inteligente consolidado de services
-from services.logging import get_intelligent_logger
+# get_intelligent_logger ya importado arriba
 bot_logger = get_intelligent_logger()
-
-# ensure we also write a simple log file for quicker debugging
-# Sistema de logging ahora manejado por services/logging.py
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -253,17 +287,8 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 # Optional: fast command registration to a test guild to avoid global sync delay
 GUILD_ID = os.getenv('GUILD_ID')
 
-# runtime state encapsulated in a single object to avoid globals
-from dataclasses import dataclass, field
-from typing import Dict, Any
-
 # Global variables for session tracking
 bot_start_time = None
-
-# Usar BotState del core system
-from core import BotState
-
-state = BotState()
 
 AUTOSIGNAL_INTERVAL = int(os.getenv('AUTOSIGNAL_INTERVAL', '20'))  # seconds between scans
 AUTOSIGNAL_SYMBOLS = [s.strip().upper() for s in os.getenv('AUTOSIGNAL_SYMBOLS', SYMBOL).split(',') if s.strip()]
@@ -457,20 +482,24 @@ async def on_ready():
     # Inicializar gestores de riesgo
     init_risk_managers()
     log_event("Gestores de riesgo inicializados correctamente")
+
+    # Validar configuración de BTCEUR (fail-safe)
+    try:
+        if not validate_btceur_strategy():
+            log_event("[BTCEUR FIX] BTCEUR desactivado automáticamente por configuración inválida.", "ERROR")
+    except Exception as e:
+        logger.error(f"Error validando estrategia BTCEUR: {e}")
     
     # Sync application commands (slash commands). If GUILD_ID is set, sync only to that guild for fast registration.
     try:
         if GUILD_ID:
             guild_obj = discord.Object(id=int(GUILD_ID))
-            # Attempt to copy any existing global commands to the guild (fast dev iteration)
-            try:
-                await bot.tree.copy_global_to(guild=guild_obj)
-                log_event("Comandos globales copiados al servidor")
-            except Exception:
-                pass
-
+            # Sincronizar primero solo al guild (definición actual = única fuente de verdad)
             await bot.tree.sync(guild=guild_obj)
             log_event(f"Comandos sincronizados al servidor {GUILD_ID}")
+            # Sincronizar también a global para que no quede versión antigua de comandos (ej. /autosignals con "enabled")
+            await bot.tree.sync()
+            log_event("Comandos sincronizados globalmente (evitar sugerencias antiguas)")
         else:
             await bot.tree.sync()
             log_event("Comandos sincronizados globalmente")
@@ -522,33 +551,10 @@ async def on_ready():
         log_event(f"Error iniciando dashboard inteligente: {e}", "ERROR")
         logger.exception("Failed to start enhanced dashboard")
     
-    # start reconnection system - DISABLED temporarily due to freezing issues
-    if RECONNECTION_AVAILABLE and False:  # Disabled
-        try:
-            # Configurar callbacks
-            async def on_mt5_reconnect():
-                log_event("🔄 MT5 reconectado exitosamente")
-            
-            async def on_discord_reconnect():
-                log_event("🔄 Discord reconectado exitosamente")
-            
-            async def on_connection_lost(service):
-                log_event(f"⚠️ Conexión perdida: {service}", "WARNING")
-            
-            reconnection_system.set_callbacks(
-                mt5_reconnect=on_mt5_reconnect,
-                discord_reconnect=on_discord_reconnect,
-                connection_lost=on_connection_lost
-            )
-            
-            # Iniciar watchdog
-            bot.loop.create_task(reconnection_system.watchdog_loop(bot, state.mt5_credentials))
-            log_event("Sistema de reconexión automática iniciado")
-        except Exception as e:
-            log_event(f"Error iniciando sistema de reconexión: {e}", "ERROR")
-            logger.exception("Failed to start reconnection system")
-    else:
-        log_event("Sistema de reconexión DESHABILITADO temporalmente", "WARNING")
+    # start reconnection system — lightweight watchdog que no bloquea el event loop
+    if RECONNECTION_AVAILABLE:
+        bot.loop.create_task(_mt5_watchdog_loop())
+        log_event("Sistema de reconexión MT5 iniciado (watchdog ligero)")
     
     # Print helpful invite URL for adding the bot with application commands scope
     try:
@@ -628,6 +634,76 @@ async def _market_opening_loop_simple():
         except Exception:
             logger.exception('Market opening loop crashed; retrying in 10 minutes')
             await asyncio.sleep(600)
+
+
+async def _mt5_watchdog_loop():
+    """
+    Watchdog ligero para MT5: verifica la conexión cada 60s y reconecta
+    si es necesario, sin bloquear el event loop de Discord.
+    """
+    await bot.wait_until_ready()
+    log_event("MT5 watchdog iniciado (verificación cada 60s)")
+
+    _consecutive_failures = 0
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+
+            # Verificar conexión MT5 en un thread separado para no bloquear
+            def _check_mt5():
+                try:
+                    import MetaTrader5 as mt5
+                    info = mt5.terminal_info()
+                    return info is not None
+                except Exception:
+                    return False
+
+            is_connected = await asyncio.to_thread(_check_mt5)
+
+            if not is_connected:
+                _consecutive_failures += 1
+                log_event(
+                    f"⚠️ MT5 desconectado (intento {_consecutive_failures}). Reconectando...",
+                    "WARNING"
+                )
+
+                def _reconnect():
+                    try:
+                        from mt5_client import initialize as mt5_init
+                        creds = state.mt5_credentials
+                        if creds.get('login') and creds.get('password') and creds.get('server'):
+                            import MetaTrader5 as mt5
+                            return mt5.initialize(
+                                login=int(creds['login']),
+                                password=creds['password'],
+                                server=creds['server']
+                            )
+                        return mt5_init()
+                    except Exception as e:
+                        logger.error(f"MT5 reconnect error: {e}")
+                        return False
+
+                success = await asyncio.to_thread(_reconnect)
+
+                if success:
+                    _consecutive_failures = 0
+                    log_event("✅ MT5 reconectado exitosamente")
+                elif _consecutive_failures >= 5:
+                    log_event(
+                        "❌ MT5: 5 fallos de reconexión consecutivos. "
+                        "Verifica que MT5 esté abierto.",
+                        "ERROR"
+                    )
+                    _consecutive_failures = 0  # reset para no spamear
+            else:
+                _consecutive_failures = 0  # conexión ok
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"MT5 watchdog error: {e}")
+            await asyncio.sleep(60)
 
 # ======================
 # COMANDOS
@@ -836,6 +912,18 @@ async def chart(ctx):
         await ctx.send(f"❌ Error generando gráfico: {e}")
 
 
+@bot.command(name="pairs")
+async def pairs_command(ctx):
+    """Muestra y permite alternar pares activos mediante botones (solo usuario autorizado)."""
+    if ctx.author.id != AUTHORIZED_USER_ID:
+        return
+
+    content = await build_pairs_overview_text()
+    view = PairToggleView(timeout=300)
+    msg = await ctx.send(content, view=view)
+    view.message = msg
+
+
 # ======================
 # Slash commands (app commands)
 # ======================
@@ -894,6 +982,269 @@ async def slash_status(interaction: discord.Interaction):
     ]
 
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="autosignals")
+@discord.app_commands.describe(mode="on, off o status (por defecto: status)")
+async def slash_autosignals(
+    interaction: discord.Interaction,
+    mode: str = "status",
+):
+    """Ver o cambiar el estado del escaneo automático de señales (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    m = mode.lower().strip()
+
+    if m in ("on", "off"):
+        new_value = (m == "on")
+        state.autosignals = new_value
+        try:
+            save_autosignals_state(new_value)
+        except Exception as e:
+            await interaction.response.send_message(
+                f"⚠️ Autosignals cambiado a **{m}**, pero falló al guardar en BD: {e}",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            f"✅ Autosignals ahora está **{'ON' if new_value else 'OFF'}**",
+            ephemeral=True,
+        )
+        return
+
+    # modo "status" (o cualquier otra cosa)
+    status_str = "ON" if state.autosignals else "OFF"
+    await interaction.response.send_message(
+        f"🔍 Autosignals está actualmente **{status_str}**",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="btceur_status")
+async def slash_btceur_status(interaction: discord.Interaction):
+    """Muestra el estado de salud de BTCEUR (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    h = symbol_health.get("BTCEUR", {})
+    status = h.get("status", "OK")
+    last_signal = h.get("last_signal_time")
+    last_error = h.get("last_error")
+
+    # Formatear última señal
+    if last_signal:
+        from datetime import datetime, timezone
+        delta = datetime.now(timezone.utc) - last_signal
+        mins = int(delta.total_seconds() / 60)
+        if mins < 60:
+            signal_str = f"hace {mins} minutos"
+        else:
+            hours = mins // 60
+            signal_str = f"hace {hours}h {mins % 60}min"
+    else:
+        signal_str = "nunca"
+
+    lines = [
+        "**BTCEUR STATUS**",
+        "",
+        f"* Estado: {status}",
+        f"* Última señal: {signal_str}",
+    ]
+    if last_error:
+        lines.append(f"* Último error: {last_error[:150]}{'...' if len(last_error) > 150 else ''}")
+
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+async def build_pairs_overview_text() -> str:
+    """
+    Construye un resumen detallado de los 3 pares principales,
+    suficiente para reemplazar el comando debug_signals.
+    """
+    symbols = ["EURUSD", "XAUUSD", "BTCEUR"]
+    lines: list[str] = []
+
+    # Intentar conectar a MT5 una sola vez
+    mt5_error: Optional[str] = None
+    try:
+        connect_mt5()
+    except Exception as e:
+        mt5_error = str(e)
+
+    for sym in symbols:
+        active = active_symbols.get(sym, False)
+        status_emoji = "✅" if active else "❌"
+        line = f"{sym} {status_emoji}"
+        if sym == "BTCEUR":
+            btceur_status = symbol_health.get("BTCEUR", {}).get("status", "OK")
+            if btceur_status in ("ERROR", "DISABLED"):
+                line += f" ⚠️ ({btceur_status})"
+        lines.append(line)
+
+        if not active:
+            lines.append("  • Estado: Inactivo (no se evalúan señales)")
+            lines.append("")
+            continue
+
+        if mt5_error is not None:
+            lines.append(f"  • Error conectando a MT5: {mt5_error}")
+            lines.append("")
+            continue
+
+        # Obtener datos de mercado
+        try:
+            df = get_candles(sym, TIMEFRAME, CANDLES)
+        except Exception as e:
+            lines.append(f"  • Error obteniendo datos: {e}")
+            lines.append("")
+            continue
+
+        try:
+            cfg = RULES_CONFIG.get(sym.upper(), {}) or {}
+            strat = cfg.get("strategy", "ema50_200")
+
+            # HARDENING BTCEUR: evitar estrategias genéricas
+            if sym == "BTCEUR" and "btceur" not in strat.lower():
+                logger.error("[BTCEUR FIX] Strategy corregida automáticamente en /pairs: %s → btceur_simple", strat)
+                strat = "btceur_simple"
+
+            # Señal básica
+            basic_signal, df_with_indicators = detect_signal(
+                df, strategy=strat, config=cfg, symbol=sym
+            )
+
+            # Señal avanzada (engine completo)
+            advanced_signal, df2, adv_info = detect_signal_advanced(
+                df,
+                strategy=strat,
+                config=cfg,
+                current_balance=5000.0,
+                symbol=sym,
+            )
+        except Exception as e:
+            lines.append(f"  • Error evaluando señal: {e}")
+            lines.append("")
+            continue
+
+        # Precio actual formateado por símbolo
+        try:
+            last_price = float(df["close"].iloc[-1])
+            if sym == "XAUUSD":
+                price_str = f"{last_price:.2f}"
+            elif sym == "BTCEUR":
+                price_str = f"{last_price:.0f}"
+            else:
+                price_str = f"{last_price:.5f}"
+        except Exception:
+            price_str = "N/A"
+
+        basic_ok = basic_signal is not None
+        adv_ok = advanced_signal is not None
+
+        confidence = "N/A"
+        score = 0.0
+        reason = None
+        if isinstance(adv_info, dict):
+            confidence = adv_info.get("confidence", "N/A")
+            score = float(adv_info.get("score", 0.0))
+            reason = adv_info.get("rejection_reason") or adv_info.get("reason")
+
+        lines.append(f"  • Precio: {price_str}")
+        lines.append(f"  • Estrategia: {strat}")
+        lines.append(f"  • Señal básica: {'✅' if basic_ok else '❌'}")
+        lines.append(f"  • Señal avanzada: {'✅' if adv_ok else '❌'}")
+        lines.append(f"  • Confianza: {confidence} | Score: {score:.2f}")
+        if not adv_ok and reason:
+            lines.append(f"  • Motivo rechazo: {str(reason)[:100]}")
+        lines.append("")
+
+    if mt5_error is not None:
+        lines.append(
+            "⚠️ No se pudo conectar a MT5; solo se muestra el estado de activación de los pares."
+        )
+
+    return "\n".join(lines).strip()
+
+
+class PairToggleView(discord.ui.View):
+    """Vista con botones para activar/desactivar pares principales."""
+
+    def __init__(self, *, timeout: float = 300):
+        super().__init__(timeout=timeout)
+        self.message: Optional[discord.Message] = None
+
+    async def _toggle_symbol(self, interaction: discord.Interaction, symbol: str):
+        if interaction.user.id != AUTHORIZED_USER_ID:
+            await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+            return
+
+        try:
+            current = active_symbols.get(symbol.upper(), False)
+            new_value = not current
+            active_symbols[symbol.upper()] = new_value
+            if symbol.upper() == "BTCEUR":
+                if not new_value:
+                    set_btceur_health(status="DISABLED")
+                else:
+                    validate_btceur_strategy()
+        except Exception as e:
+            logger.error(f"Error alternando estado de {symbol}: {e}")
+            await interaction.response.send_message(
+                f"❌ Error cambiando estado de {symbol}", ephemeral=True
+            )
+            return
+
+        # Recalcular el resumen completo para reflejar el nuevo estado
+        try:
+            content = await build_pairs_overview_text()
+            await interaction.response.edit_message(content=content, view=self)
+        except Exception as e:
+            logger.error(f"Error actualizando mensaje de pares: {e}")
+            # Fallback para no dejar la interacción sin respuesta
+            await interaction.followup.send(
+                "❌ No se pudo actualizar el mensaje de pares.", ephemeral=True
+            )
+
+    @discord.ui.button(label="EURUSD", style=discord.ButtonStyle.primary)
+    async def eurusd_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle_symbol(interaction, "EURUSD")
+
+    @discord.ui.button(label="XAUUSD", style=discord.ButtonStyle.primary)
+    async def xauusd_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle_symbol(interaction, "XAUUSD")
+
+    @discord.ui.button(label="BTCEUR", style=discord.ButtonStyle.primary)
+    async def btceur_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle_symbol(interaction, "BTCEUR")
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except Exception as e:
+                logger.error(f"Error desactivando botones de pares tras timeout: {e}")
+
+
+@bot.tree.command(name="pairs")
+async def slash_pairs(interaction: discord.Interaction):
+    """Muestra y permite alternar los pares activos del bot (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    content = await build_pairs_overview_text()
+    view = PairToggleView(timeout=300)
+    msg = await interaction.followup.send(content, view=view)
+    view.message = msg
 
 
 @bot.tree.command(name="logs_info")
@@ -1365,7 +1716,12 @@ async def slash_scan(interaction: discord.Interaction, symbols: str = '', strate
             df = get_candles(s, TIMEFRAME, CANDLES)
             cfg = RULES_CONFIG.get(s.upper(), {}) or {}
             strat_used = cfg.get('strategy') or strategy
-            sig, _ = detect_signal(df, strategy=strat_used, config=cfg)
+
+            # HARDENING BTCEUR: forzar uso de estrategia BTCEUR si hay ambigüedad
+            if s.upper() == 'BTCEUR' and (not strat_used or 'btceur' not in strat_used.lower()):
+                logger.error("[BTCEUR FIX] Strategy corregida automáticamente en /scan: %s → btceur_simple", strat_used)
+                strat_used = 'btceur_simple'
+            sig, _ = detect_signal(df, strategy=strat_used, config=cfg, symbol=s)
             if sig:
                 results.append((s, sig.get('type'), sig.get('entry')))
         except Exception:
@@ -1789,7 +2145,7 @@ async def slash_test_fallback(interaction: discord.Interaction, symbol: str = 'E
     discord.app_commands.Choice(name="₿ BTCEUR", value="BTCEUR")
 ])
 async def slash_debug_signals(interaction: discord.Interaction, symbol: str = 'EURUSD'):
-    """Debug detallado del sistema de señales para ver por qué no se generan (solo admin)."""
+    """Debug detallado del sistema de señales con pipeline completo (solo admin)."""
     if interaction.user.id != AUTHORIZED_USER_ID:
         bot_logger.command_used(interaction.user.id, f"debug_signals {symbol}", False)
         await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
@@ -1804,23 +2160,27 @@ async def slash_debug_signals(interaction: discord.Interaction, symbol: str = 'E
         connect_mt5()
         df = get_candles(symbol, TIMEFRAME, CANDLES)
         
-        # Test señal básica
+        # Configuración
         cfg = RULES_CONFIG.get(symbol.upper(), {}) or {}
         strat = cfg.get('strategy', 'ema50_200')
+
+        # HARDENING BTCEUR: evitar estrategias no BTCEUR
+        if symbol.upper() == 'BTCEUR' and 'btceur' not in strat.lower():
+            logger.error("[BTCEUR FIX] Strategy corregida automáticamente en /debug_signals: %s → btceur_simple", strat)
+            strat = 'btceur_simple'
         
-        basic_signal, df_with_indicators = detect_signal(df, strategy=strat, config=cfg)
-        
-        # Test señal avanzada
-        advanced_signal, df2, advanced_info = detect_signal_advanced(
+        # Usar SOLO detect_signal_advanced (pipeline completo)
+        advanced_signal, df_with_indicators, evaluation_info = detect_signal_advanced(
             df, 
             strategy=strat, 
             config=cfg, 
-            current_balance=5000.0
+            current_balance=5000.0,
+            symbol=symbol.upper(),
         )
         
         embed = discord.Embed(
             title=f"🔍 Debug de Señales: {symbol}",
-            description="Análisis detallado del sistema de detección",
+            description="Análisis con pipeline completo (engine + scoring + filtros)",
             color=0xff9500
         )
         
@@ -1833,72 +2193,88 @@ async def slash_debug_signals(interaction: discord.Interaction, symbol: str = 'E
             current_price_str = f"{df['close'].iloc[-1]:.5f}"
         
         # Información básica
+        strategy_used = evaluation_info.get('strategy_used', strat)
         embed.add_field(
             name="📊 **Datos Básicos**",
             value=(
                 f"**Símbolo:** {symbol}\n"
-                f"**Estrategia:** {strat}\n"
+                f"**Estrategia:** {strategy_used}\n"
                 f"**Velas:** {len(df)}\n"
-                f"**Precio actual:** {current_price_str}"
+                f"**Precio:** {current_price_str}"
             ),
             inline=True
         )
         
-        # Señal básica
+        # Pipeline completo
+        confidence = evaluation_info.get('confidence', 'NONE')
+        score = evaluation_info.get('score', 0.0)
+        should_show = evaluation_info.get('should_show', False)
+        
         embed.add_field(
-            name="🎯 **Señal Básica**",
+            name="🎯 **Pipeline Completo**",
             value=(
-                f"**Estado:** {'✅ DETECTADA' if basic_signal else '❌ NO DETECTADA'}\n"
-                f"**Tipo:** {basic_signal.get('type', 'N/A') if basic_signal else 'N/A'}\n"
-                f"**Explicación:** {basic_signal.get('explanation', 'Sin señal')[:50] if basic_signal else 'Sin señal'}..."
+                f"**Señal:** {'✅ DETECTADA' if advanced_signal else '❌ NO DETECTADA'}\n"
+                f"**Confianza:** {confidence}\n"
+                f"**Score:** {score:.2f}\n"
+                f"**Mostrar:** {'✅ SÍ' if should_show else '❌ NO'}"
             ),
             inline=True
         )
         
-        # Sistemas avanzados
-        systems_available = advanced_info.get('systems_available', False)
+        # Detalles de evaluación
+        details = evaluation_info.get('details', {})
+        rejection_reason = evaluation_info.get('rejection_reason', 'N/A')
+        
         embed.add_field(
-            name="🔧 **Sistemas Avanzados**",
+            name="🔧 **Evaluación**",
             value=(
-                f"**Disponibles:** {'✅ SÍ' if systems_available else '❌ NO'}\n"
-                f"**Filtros:** {'✅ ACTIVOS' if advanced_info.get('advanced_filters', False) else '❌ INACTIVOS'}\n"
-                f"**M15:** {'✅ ACTIVO' if advanced_info.get('m15_validation', False) else '❌ INACTIVO'}"
+                f"**Engine:** {'✅ EJECUTADO' if details else '❌ NO'}\n"
+                f"**Auto-exec:** {'✅ SÍ' if evaluation_info.get('can_auto_execute', False) else '❌ NO'}\n"
+                f"**Aprobado:** {'✅ SÍ' if evaluation_info.get('approved', False) else '❌ NO'}"
             ),
             inline=True
         )
         
-        # Resultado final
-        embed.add_field(
-            name="🎯 **Resultado Final**",
-            value=(
-                f"**Señal Avanzada:** {'✅ APROBADA' if advanced_signal else '❌ RECHAZADA'}\n"
-                f"**Confianza:** {advanced_signal.get('confidence', 'N/A') if advanced_signal else 'N/A'}\n"
-                f"**Razón rechazo:** {advanced_info.get('reason', 'N/A') if not advanced_signal else 'N/A'}"
-            ),
-            inline=False
-        )
+        # Resultado y razón de rechazo
+        if advanced_signal:
+            signal_type = advanced_signal.get('type', 'N/A')
+            explanation = advanced_signal.get('explanation', 'N/A')[:80]
+            embed.add_field(
+                name="✅ **Señal Generada**",
+                value=(
+                    f"**Tipo:** {signal_type}\n"
+                    f"**Explicación:** {explanation}..."
+                ),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="❌ **Razón de Rechazo**",
+                value=f"{rejection_reason[:200] if rejection_reason != 'N/A' else 'Sin información de rechazo'}",
+                inline=False
+            )
         
-        # Información detallada de filtros
-        if 'filter_info' in advanced_info and advanced_info['filter_info']:
-            filter_details = []
-            filter_info = advanced_info['filter_info']
+        # Detalles adicionales del engine
+        if details:
+            detail_lines = []
             
-            if 'confluence' in filter_info:
-                conf = filter_info['confluence']
-                filter_details.append(f"**Confluencias:** {conf.get('score', 0)}/3 - {conf.get('passed', False)}")
+            if 'setup_found' in details:
+                detail_lines.append(f"**Setup:** {'✅' if details['setup_found'] else '❌'}")
             
-            if 'session' in filter_info:
-                sess = filter_info['session']
-                filter_details.append(f"**Sesión:** {sess.get('passed', False)} - {sess.get('reason', 'N/A')[:30]}")
+            if 'confirmations' in details:
+                confs = details['confirmations']
+                if isinstance(confs, dict):
+                    passed = confs.get('passed', 0)
+                    total = confs.get('total', 0)
+                    detail_lines.append(f"**Confirmaciones:** {passed}/{total}")
             
-            if 'drawdown' in filter_info:
-                dd = filter_info['drawdown']
-                filter_details.append(f"**Drawdown:** {dd.get('passed', False)} - {dd.get('reason', 'N/A')[:30]}")
+            if 'filters_passed' in details:
+                detail_lines.append(f"**Filtros:** {'✅ PASADOS' if details['filters_passed'] else '❌ FALLADOS'}")
             
-            if filter_details:
+            if detail_lines:
                 embed.add_field(
-                    name="🔍 **Detalles de Filtros**",
-                    value="\n".join(filter_details),
+                    name="🔍 **Detalles del Engine**",
+                    value="\n".join(detail_lines),
                     inline=False
                 )
         
@@ -1906,9 +2282,8 @@ async def slash_debug_signals(interaction: discord.Interaction, symbol: str = 'E
         embed.add_field(
             name="⚙️ **Configuración**",
             value=(
-                f"**Min Confluencias:** {cfg.get('min_confirmations', 'N/A')}\n"
-                f"**Filtros Sesión:** {cfg.get('use_session_filters', 'N/A')}\n"
-                f"**Filtros Volatilidad:** {cfg.get('use_volatility_filters', 'N/A')}\n"
+                f"**Min Score:** {cfg.get('min_score', 'N/A')}\n"
+                f"**Min R:R:** {cfg.get('min_rr_ratio', 'N/A')}\n"
                 f"**Habilitado:** {cfg.get('enabled', True)}"
             ),
             inline=True
@@ -1916,25 +2291,30 @@ async def slash_debug_signals(interaction: discord.Interaction, symbol: str = 'E
         
         # Sugerencias
         suggestions = []
-        if not basic_signal:
-            suggestions.append("• No hay condiciones básicas para señal")
-        if not systems_available:
-            suggestions.append("• Sistemas avanzados no disponibles")
-        if advanced_info.get('reason'):
-            suggestions.append(f"• {advanced_info['reason'][:60]}")
+        if not advanced_signal:
+            if rejection_reason and rejection_reason != 'N/A':
+                suggestions.append(f"• {rejection_reason[:100]}")
+            else:
+                suggestions.append("• Revisa logs para ver rechazos detallados")
+                suggestions.append("• Verifica que el símbolo esté activo")
+                suggestions.append("• Comprueba condiciones de mercado")
+        else:
+            suggestions.append("✅ Señal válida generada correctamente")
         
-        if suggestions:
-            embed.add_field(
-                name="💡 **Diagnóstico**",
-                value="\n".join(suggestions),
-                inline=False
-            )
+        embed.add_field(
+            name="💡 **Diagnóstico**",
+            value="\n".join(suggestions),
+            inline=False
+        )
+        
+        embed.set_footer(text="💡 Tip: Revisa los logs del bot para ver detalles de [BTCEUR][REJECT]")
         
         await interaction.followup.send(embed=embed)
         bot_logger.command_used(interaction.user.id, f"debug_signals {symbol}")
         
     except Exception as e:
         bot_logger.command_used(interaction.user.id, f"debug_signals {symbol}", False)
+        logger.error(f"Error en debug_signals: {e}", exc_info=True)
         await interaction.followup.send(f"❌ Error en debug: {e}")
 
 
@@ -2008,6 +2388,206 @@ async def slash_test_signal(interaction: discord.Interaction, symbol: str = 'EUR
     except Exception as e:
         await interaction.followup.send(f"❌ Error generando señal de prueba: {e}")
 
+
+
+@bot.tree.command(name="diagnose_signals")
+async def slash_diagnose_signals(interaction: discord.Interaction, symbol: str = 'EURUSD', iterations: int = 20):
+    """Diagnóstico completo del pipeline de señales analizando ventanas históricas distintas (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        from core.replay_engine import get_replay_engine
+        
+        symbol = symbol.upper()
+        
+        # Límite de seguridad: máximo 10000 iteraciones
+        if iterations > 10000:
+            await interaction.followup.send(f"⚠️ Maximum iterations allowed: 10000\nUsando 10000 iteraciones.")
+            iterations = 10000
+        
+        # Obtener configuración del símbolo
+        import json
+        try:
+            with open('rules_config.json', 'r') as f:
+                rules = json.load(f)
+            symbol_config = rules.get(symbol, {})
+            strategy_name = symbol_config.get('strategy', 'ema50_200')
+            min_score = symbol_config.get('min_score', 0.60)
+        except Exception:
+            strategy_name = 'ema50_200'
+            min_score = 0.60
+        
+        # Usar replay engine en modo diagnóstico
+        # Esto analiza diferentes ventanas históricas del mercado
+        replay_engine = get_replay_engine(lookback_window=100)
+        
+        # Ejecutar replay (analiza ventanas históricas distintas)
+        stats_obj = replay_engine.run_replay(
+            symbol=symbol,
+            bars=iterations,
+            strategy=strategy_name,
+            skip_duplicate_filter=True  # Desactivar filtro de duplicados en diagnóstico
+        )
+        
+        # Calcular estadísticas de diagnóstico
+        total_evaluated = stats_obj.bars_analyzed
+        setup_detected = stats_obj.setups_detected
+        final_signals = stats_obj.signals_final
+        
+        # Analizar señales para obtener más detalles
+        signals = replay_engine.get_signals()
+        passed_scoring = 0
+        passed_confidence = 0
+        
+        for sig in signals:
+            passed_scoring += 1  # Si llegó a ser señal final, pasó scoring
+            if sig.confidence in ['HIGH', 'VERY_HIGH', 'MEDIUM-HIGH']:
+                passed_confidence += 1
+        
+        # Generar reporte
+        report = f"🔍 **DIAGNÓSTICO DE SEÑALES - {symbol}**\n\n"
+        report += f"**Configuración:**\n"
+        report += f"- Estrategia: `{strategy_name}`\n"
+        report += f"- Min Score: `{min_score}`\n"
+        report += f"- Ventanas analizadas: `{iterations}`\n"
+        report += f"- Lookback: `100 velas`\n\n"
+        
+        report += f"**Análisis de Ventanas Históricas:**\n"
+        report += f"- Total evaluado: `{total_evaluated}` ventanas distintas\n"
+        report += f"- Setup detectado: `{setup_detected}` ({setup_detected/total_evaluated*100:.1f}%)\n"
+        report += f"- Pasó scoring: `{passed_scoring}` ({passed_scoring/total_evaluated*100:.1f}%)\n"
+        report += f"- Alta confianza: `{passed_confidence}` ({passed_confidence/total_evaluated*100:.1f}%)\n"
+        report += f"- Señales finales: `{final_signals}` ({final_signals/total_evaluated*100:.1f}%)\n\n"
+        
+        # Desglose por tipo
+        if final_signals > 0:
+            report += f"**Desglose de Señales:**\n"
+            report += f"- BUY: `{stats_obj.buy_signals}` ({stats_obj.buy_signals/final_signals*100:.1f}%)\n"
+            report += f"- SELL: `{stats_obj.sell_signals}` ({stats_obj.sell_signals/final_signals*100:.1f}%)\n\n"
+        
+        # Análisis de confianza
+        if signals:
+            confidence_counts = {}
+            for sig in signals:
+                conf = sig.confidence
+                confidence_counts[conf] = confidence_counts.get(conf, 0) + 1
+            
+            report += f"**Distribución de Confianza:**\n"
+            for conf, count in sorted(confidence_counts.items(), key=lambda x: x[1], reverse=True):
+                report += f"- {conf}: `{count}` ({count/len(signals)*100:.1f}%)\n"
+            report += "\n"
+        
+        # Interpretación
+        report += f"**Interpretación:**\n"
+        
+        if final_signals == 0:
+            report += f"⚠️ No se detectaron señales finales en {iterations} ventanas históricas.\n"
+            report += f"Posibles causas:\n"
+            report += f"- Estrategia demasiado restrictiva\n"
+            report += f"- Condiciones de mercado no favorables en el período\n"
+            report += f"- Min score muy alto ({min_score})\n"
+        elif final_signals / total_evaluated < 0.01:
+            report += f"⚠️ Tasa de señales muy baja ({final_signals/total_evaluated*100:.2f}%)\n"
+            report += f"La estrategia es extremadamente selectiva.\n"
+        elif final_signals / total_evaluated > 0.10:
+            report += f"⚠️ Tasa de señales muy alta ({final_signals/total_evaluated*100:.1f}%)\n"
+            report += f"Riesgo de sobretrading. Considerar aumentar filtros.\n"
+        else:
+            report += f"✅ Tasa de señales en rango óptimo ({final_signals/total_evaluated*100:.1f}%)\n"
+        
+        report += f"\n💡 **Nota:** Este diagnóstico analiza {iterations} ventanas históricas DISTINTAS del mercado.\n"
+        report += f"Tiempo de ejecución: `{stats_obj.execution_time:.2f}s`\n"
+        
+        await interaction.followup.send(report)
+        
+    except Exception as e:
+        logger.error(f"Error en diagnóstico: {e}", exc_info=True)
+        await interaction.followup.send(f"❌ Error en diagnóstico: {e}")
+
+
+@bot.tree.command(name="test_easy_signal")
+async def slash_test_easy_signal(interaction: discord.Interaction, symbol: str = 'EURUSD'):
+    """Genera señal con estrategia de test relajada para verificar pipeline (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        from mt5_client import get_candles
+        import MetaTrader5 as mt5
+        from signals import detect_signal
+        
+        symbol = symbol.upper()
+        
+        # Obtener datos
+        df = get_candles(symbol, mt5.TIMEFRAME_H1, 100)
+        if df is None or len(df) < 50:
+            await interaction.followup.send(f"❌ No se pudieron obtener datos para {symbol}")
+            return
+        
+        # Configuración ultra-relajada para test
+        test_config = {
+            'min_confirmations': 1,  # Solo 1 confirmación
+            'rsi_oversold': 45,  # Muy relajado
+            'rsi_overbought': 55,
+            'atr_threshold': 0.5,  # Muy bajo
+            'range_threshold': 0.001,  # Muy bajo
+            'min_body_ratio': 0.1,  # Muy bajo
+            'ema_distance_max': 0.05,  # Muy amplio
+        }
+        
+        # Detectar señal con config relajada
+        signal, df_with_indicators = detect_signal(df, 'ema50_200', test_config, symbol=symbol)
+        
+        if signal:
+            # Generar gráfico
+            try:
+                from charts import generate_chart
+                chart_file = generate_chart(df_with_indicators, symbol=symbol, signal=signal)
+                
+                text = (
+                    f"🧪 **SEÑAL DE TEST (Config Relajada)**\n"
+                    f"Activo: {signal.get('symbol', symbol)}\n"
+                    f"Tipo: {signal['type']}\n"
+                    f"Entrada: {signal['entry']:.5f}\n"
+                    f"SL: {signal['sl']:.5f}\n"
+                    f"TP: {signal['tp']:.5f}\n"
+                    f"Explicación: {signal.get('explanation', '-')}\n\n"
+                    f"✅ **Pipeline funciona correctamente**\n"
+                    f"El problema está en las condiciones demasiado restrictivas de las estrategias actuales."
+                )
+                
+                if chart_file:
+                    await interaction.followup.send(text, file=discord.File(chart_file))
+                    try:
+                        import os
+                        os.remove(chart_file)
+                    except Exception:
+                        pass
+                else:
+                    await interaction.followup.send(text)
+                    
+            except Exception as e:
+                await interaction.followup.send(f"✅ Señal detectada: {signal['type']} @ {signal['entry']:.5f}\n\n⚠️ Error en gráfico: {e}")
+        else:
+            await interaction.followup.send(
+                f"❌ **Ni siquiera con config ultra-relajada se detectó señal**\n\n"
+                f"Esto indica un problema más profundo:\n"
+                f"- Datos de mercado insuficientes\n"
+                f"- Indicadores no se calculan correctamente\n"
+                f"- Estrategia tiene error de código\n\n"
+                f"Revisa los logs para más detalles."
+            )
+            
+    except Exception as e:
+        logger.error(f"Error en test_easy_signal: {e}", exc_info=True)
+        await interaction.followup.send(f"❌ Error: {e}")
 
 
 @bot.tree.command(name="mt5_login")
@@ -2275,8 +2855,12 @@ class MT5CredentialsModal(ui.Modal, title="MT5 Credentials"):
             state.mt5_credentials['login'] = self.login.value
         state.mt5_credentials['password'] = self.password.value
         state.mt5_credentials['server'] = self.server.value
-        # try to persist encrypted
-        ok = save_credentials(state.mt5_credentials)
+        # try to persist encrypted (save_credentials espera login, password, server)
+        ok = save_credentials(
+            state.mt5_credentials['login'],
+            state.mt5_credentials['password'],
+            state.mt5_credentials['server'],
+        )
         if ok:
             await interaction.response.send_message("Credenciales MT5 almacenadas y cifradas en disco. Usa `mt5_login` para intentar iniciar sesión.", ephemeral=True)
         else:
@@ -2340,6 +2924,102 @@ async def mt5_login(ctx):
 
 
 # Live dashboard command moved to services/commands.py
+
+
+@bot.tree.command(name="replay")
+@discord.app_commands.describe(
+    symbol="Símbolo a analizar (EURUSD, XAUUSD, BTCEUR)",
+    bars="Número de velas históricas a analizar (ej: 5000)"
+)
+@log_discord_command
+async def slash_replay(interaction: discord.Interaction, symbol: str = 'EURUSD', bars: int = 1000):
+    """Market Replay - Simula miles de velas históricas para validar estrategias (solo admin)."""
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("⛔ No autorizado", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    
+    try:
+        from core.replay_engine import get_replay_engine
+        
+        symbol = symbol.upper()
+        
+        # Validar parámetros
+        if bars < 100:
+            await interaction.followup.send("⚠️ Mínimo 100 velas requeridas")
+            return
+        
+        if bars > 10000:
+            await interaction.followup.send("⚠️ Máximo 10000 velas permitidas")
+            return
+        
+        # Mensaje de inicio
+        await interaction.followup.send(f"🔄 Iniciando Market Replay para {symbol}...\n📊 Analizando {bars} velas históricas...")
+        
+        # Ejecutar replay
+        replay_engine = get_replay_engine(lookback_window=100)
+        stats = replay_engine.run_replay(
+            symbol=symbol,
+            bars=bars,
+            skip_duplicate_filter=True  # Desactivar filtro de duplicados en replay
+        )
+        
+        # Generar reporte
+        report = f"📈 **MARKET REPLAY RESULTS — {symbol}**\n\n"
+        
+        report += f"**Configuración:**\n"
+        report += f"- Velas analizadas: `{stats.bars_analyzed}`\n"
+        report += f"- Ventana de análisis: `100 velas`\n"
+        report += f"- Tiempo de ejecución: `{stats.execution_time:.2f}s`\n\n"
+        
+        report += f"**Pipeline de Señales:**\n"
+        report += f"- Setups detectados: `{stats.setups_detected}` ({stats.setups_detected/stats.bars_analyzed*100:.1f}%)\n"
+        report += f"- Señales finales: `{stats.signals_final}` ({stats.signals_final/stats.bars_analyzed*100:.1f}%)\n"
+        report += f"  • BUY: `{stats.buy_signals}`\n"
+        report += f"  • SELL: `{stats.sell_signals}`\n\n"
+        
+        if stats.signals_final > 0:
+            report += f"**Simulación TP/SL:**\n"
+            report += f"- TP alcanzado: `{stats.tp_hits}` ✅\n"
+            report += f"- SL alcanzado: `{stats.sl_hits}` ❌\n"
+            report += f"- Pendientes: `{stats.pending}` ⏳\n"
+            
+            closed_trades = stats.tp_hits + stats.sl_hits
+            if closed_trades > 0:
+                report += f"\n**Métricas:**\n"
+                report += f"- Winrate: `{stats.winrate:.1f}%`\n"
+                report += f"- R:R promedio: `{stats.avg_rr:.2f}`\n"
+                report += f"- Total pips: `{stats.total_pips:+.1f}`\n"
+                report += f"- Pips por trade: `{stats.total_pips/closed_trades:+.1f}`\n"
+            else:
+                report += f"\n⚠️ No hay trades cerrados para calcular winrate\n"
+        else:
+            report += f"⚠️ **No se detectaron señales finales**\n\n"
+            report += f"Posibles causas:\n"
+            report += f"- Condiciones de mercado no favorables en el período analizado\n"
+            report += f"- Estrategia demasiado restrictiva\n"
+            report += f"- Configuración de scoring muy alta\n"
+        
+        report += f"\n💡 **Nota:** Este replay usa el mismo pipeline de producción (estrategias, engine, scoring, filtros)\n"
+        
+        await interaction.followup.send(report)
+        
+        # Si hay señales, ofrecer reporte detallado
+        if stats.signals_final > 0 and stats.signals_final <= 20:
+            detailed_report = replay_engine.get_detailed_report()
+            
+            # Dividir en chunks si es muy largo
+            if len(detailed_report) > 1900:
+                chunks = [detailed_report[i:i+1900] for i in range(0, len(detailed_report), 1900)]
+                for chunk in chunks[:3]:  # Máximo 3 chunks
+                    await interaction.followup.send(f"```\n{chunk}\n```")
+            else:
+                await interaction.followup.send(f"```\n{detailed_report}\n```")
+        
+    except Exception as e:
+        logger.error(f"Error en replay: {e}", exc_info=True)
+        await interaction.followup.send(f"❌ Error ejecutando replay: {e}")
 
 
 # ======================

@@ -19,6 +19,158 @@ logger = logging.getLogger(__name__)
 
 class XAUUSDStrategy(BaseStrategy):
     """
+    Estrategia XAUUSD: Momentum en tendencia con filtro EMA200
+
+    Condiciones:
+    - EMA20 > EMA50 (tendencia corto plazo)
+    - Precio por encima de EMA200 (tendencia mayor)
+    - RSI > 55 para BUY / RSI < 45 para SELL (momentum)
+    - ATR > media (volatilidad presente)
+    - Separación mínima EMA20/EMA50 (no lateral)
+    """
+
+    def __init__(self):
+        super().__init__("XAUUSD_Simple")
+
+    def _get_default_config(self) -> Dict:
+        return {
+            'ema_fast':   20,
+            'ema_slow':   50,
+            'ema_trend':  200,
+            'ema_min_separation': 0.001,   # 0.1% mínimo (oro tiene más separación que forex)
+            'rsi_period': 14,
+            'rsi_buy_threshold':  55,
+            'rsi_sell_threshold': 45,
+            'atr_period':     14,
+            'atr_multiplier': 1.0,
+            'sl_atr_multiplier': 2.0,
+            'tp_atr_multiplier': 5.0,   # R:R 2.5 — oro necesita más recorrido
+            'expires_minutes': 60,
+        }
+
+    def _add_specific_indicators(self, df: pd.DataFrame, config: Dict) -> pd.DataFrame:
+        df['ema20']  = self._ema(df['close'], config['ema_fast'])
+        df['ema50']  = self._ema(df['close'], config['ema_slow'])
+        df['ema200'] = self._ema(df['close'], config['ema_trend'])
+        return df
+
+    def detect_setup(self, df: pd.DataFrame, config: Dict = None) -> Optional[Dict]:
+        cfg = {**self.default_config, **(config or {})}
+
+        if not self.validate_data(df) or len(df) < cfg['ema_trend']:
+            logger.debug("[XAUUSD][REJECT] insufficient_data | len=%d", len(df))
+            return None
+
+        df = self.add_indicators(df, cfg)
+
+        last = df.iloc[-1]
+        price       = float(last['close'])
+        ema20       = float(last['ema20'])
+        ema50       = float(last['ema50'])
+        ema200      = float(last['ema200'])
+        rsi         = float(last['rsi'])
+        atr_current = float(last['atr'])
+
+        # ── 1. Tendencia EMA20 vs EMA50 ──────────────────────────────────────
+        bullish = ema20 > ema50
+        bearish = ema20 < ema50
+        if not (bullish or bearish):
+            return None
+        direction = 'BUY' if bullish else 'SELL'
+
+        # ── 2. Separación mínima (no lateral) ────────────────────────────────
+        ema_sep = abs(ema20 - ema50) / ema50
+        if ema_sep < cfg['ema_min_separation']:
+            logger.debug("[XAUUSD][REJECT] ema_too_close | sep=%.4f", ema_sep)
+            return None
+
+        # ── 3. Filtro EMA200 (tendencia mayor) ───────────────────────────────
+        if direction == 'BUY' and price < ema200:
+            logger.debug("[XAUUSD][REJECT] price_below_ema200_buy")
+            return None
+        if direction == 'SELL' and price > ema200:
+            logger.debug("[XAUUSD][REJECT] price_above_ema200_sell")
+            return None
+
+        # ── 4. RSI con momentum ───────────────────────────────────────────────
+        rsi_ok = rsi > cfg['rsi_buy_threshold'] if direction == 'BUY' \
+                 else rsi < cfg['rsi_sell_threshold']
+        if not rsi_ok:
+            logger.debug("[XAUUSD][REJECT] rsi_no_momentum | rsi=%.1f", rsi)
+            return None
+
+        # ── 5. ATR > media (volatilidad presente) ─────────────────────────────
+        atr_mean = df['atr'].tail(20).mean()
+        if atr_current <= atr_mean * cfg['atr_multiplier']:
+            logger.debug("[XAUUSD][REJECT] low_volatility | atr=%.2f mean=%.2f", atr_current, atr_mean)
+            return None
+
+        # ── 6. No entrar en impulso adverso (2 velas en contra) ──────────────
+        prev = df.iloc[-2]
+        last_bearish = float(last['close']) < float(last['open'])
+        prev_bearish = float(prev['close']) < float(prev['open'])
+        last_bullish = float(last['close']) > float(last['open'])
+        prev_bullish = float(prev['close']) > float(prev['open'])
+
+        if direction == 'BUY' and last_bearish and prev_bearish:
+            logger.debug("[XAUUSD][REJECT] two_bearish_candles_on_buy")
+            return None
+        if direction == 'SELL' and last_bullish and prev_bullish:
+            logger.debug("[XAUUSD][REJECT] two_bullish_candles_on_sell")
+            return None
+
+        # ── NIVELES ───────────────────────────────────────────────────────────
+        sl_distance = atr_current * cfg['sl_atr_multiplier']
+        tp_distance = atr_current * cfg['tp_atr_multiplier']
+
+        if direction == 'BUY':
+            sl = price - sl_distance
+            tp = price + tp_distance
+        else:
+            sl = price + sl_distance
+            tp = price - tp_distance
+
+        # ── FORTALEZA ─────────────────────────────────────────────────────────
+        rsi_strength = abs(rsi - 50) / 50
+        ema_strength = min(1.0, ema_sep * 50)
+        setup_strength = (rsi_strength * 0.5) + (ema_strength * 0.5)
+
+        signal = {
+            'type': direction,
+            'entry': price,
+            'sl': sl,
+            'tp': tp,
+            'timeframe': 'H1',
+            'explanation': (f'XAUUSD: {direction} | EMA200✓ | sep={ema_sep:.3f} | RSI {rsi:.1f}'),
+            'expires': datetime.now(timezone.utc) + timedelta(minutes=cfg['expires_minutes']),
+            'setup_strength': setup_strength,
+            'context': {
+                'strategy': 'xauusd_simple',
+                'confirmations': [
+                    {'name': 'EMA_TREND',   'passed': True, 'value': ema_sep,  'description': f'EMA sep={ema_sep:.3f}'},
+                    {'name': 'EMA200',      'passed': True, 'value': 1.0,      'description': 'Precio lado EMA200'},
+                    {'name': 'RSI_MOMENTUM','passed': True, 'value': rsi,      'description': f'RSI={rsi:.1f}'},
+                    {'name': 'ATR_OK',      'passed': True, 'value': atr_current/atr_mean, 'description': 'Volatilidad ok'},
+                ],
+                'market_conditions': {
+                    'ema20': ema20, 'ema50': ema50, 'ema200': ema200,
+                    'ema_separation': ema_sep,
+                    'rsi': rsi,
+                    'atr_current': atr_current,
+                    'atr_mean': atr_mean,
+                },
+                'risk_reward': tp_distance / sl_distance if sl_distance > 0 else 0,
+                'simple_strategy': True
+            }
+        }
+
+        logger.info("[XAUUSD][SIGNAL] type=%s | price=%.2f | rsi=%.1f | sep=%.3f | ema200_ok=True",
+                   direction, price, rsi, ema_sep)
+        return signal
+
+
+class XAUUSDReversalStrategy(BaseStrategy):
+    """
     Estrategia XAUUSD: Ultra-selectiva con reversión en niveles clave
     
     Setup Principal:

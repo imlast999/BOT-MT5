@@ -4,13 +4,17 @@ Trading Strategies Module
 Provides access to all trading strategies and strategy management functions.
 """
 
+import logging
 from .base import BaseStrategy
+
+logger = logging.getLogger(__name__)
 from .eurusd import EURUSDStrategy
 from .xauusd import XAUUSDStrategy
 
-# Import BTCEUR conditionally to avoid startup issues
+# Import BTCEUR desde la implementación oficial (btceur_new.py)
+# Este es ahora el ÚNICO origen de la estrategia BTCEUR en el sistema.
 try:
-    from .btceur import BTCEURStrategy
+    from .btceur_new import BTCEURStrategy
     BTCEUR_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: BTCEURStrategy not available: {e}")
@@ -37,12 +41,26 @@ def get_strategy(symbol: str):
     Returns:
         Strategy instance or None if not found
     """
-    strategy_class = STRATEGY_REGISTRY.get(symbol.upper())
+    symbol_upper = symbol.upper()
+    strategy_class = STRATEGY_REGISTRY.get(symbol_upper)
+
+    # Estrategia registrada correctamente
     if strategy_class:
         return strategy_class()
+
+    # PROTECCIÓN BTCEUR: nunca hacer fallback silencioso a EURUSD
+    if symbol_upper == 'BTCEUR':
+        err_msg = "Estrategia no disponible (BTCEUR no registrado o import fallido)."
+        logger.error("[CRITICAL][BTCEUR] %s", err_msg)
+        try:
+            from core import set_btceur_health
+            set_btceur_health(status="ERROR", last_error=err_msg)
+        except Exception:
+            pass
+        return None
     
-    # Fallback to EURUSD if symbol not found
-    if symbol.upper() != 'EURUSD':
+    # Fallback genérico a EURUSD solo para otros símbolos
+    if symbol_upper != 'EURUSD':
         print(f"Warning: Strategy for {symbol} not found, using EURUSD as fallback")
         return EURUSDStrategy()
     

@@ -36,6 +36,76 @@ class BotState:
     autosignals: bool = field(default_factory=lambda: os.getenv('AUTOSIGNALS', '0') == '1')
     last_auto_sent: Dict[str, Any] = field(default_factory=dict)
 
+# Estado global de símbolos activos (punto único de verdad)
+active_symbols: Dict[str, bool] = {
+    "EURUSD": True,
+    "XAUUSD": True,
+    "BTCEUR": True,
+}
+
+# Estado de salud por símbolo (visibilidad; OK/DISABLED/ERROR + actividad)
+# Inicializado para los tres pares principales; last_signal_time y signals_count se actualizan al generar señales
+_symbol_health_default = {
+    "status": "OK",
+    "last_signal_time": None,
+    "last_error": None,
+    "signals_count": 0,
+}
+symbol_health: Dict[str, Dict] = {
+    "EURUSD": dict(_symbol_health_default),
+    "XAUUSD": dict(_symbol_health_default),
+    "BTCEUR": {
+        "status": "OK",
+        "last_signal_time": None,
+        "last_error": None,
+        "signals_count": 0,
+    },
+}
+
+def set_btceur_health(
+    status: str = None,
+    last_signal_time: Any = None,
+    last_error: str = None,
+) -> None:
+    """Actualiza el estado de salud de BTCEUR para visibilidad."""
+    try:
+        h = symbol_health.get("BTCEUR", {})
+        if status is not None:
+            h["status"] = status
+        if last_signal_time is not None:
+            h["last_signal_time"] = last_signal_time
+        if last_error is not None:
+            h["last_error"] = last_error[:200] if last_error else None  # limitar longitud
+        symbol_health["BTCEUR"] = h
+    except Exception:
+        pass
+
+
+def record_signal(symbol: str) -> None:
+    """Registra que se generó una señal válida para el símbolo (solo tracking, no lógica de trading)."""
+    try:
+        sym = symbol.upper()
+        h = symbol_health.get(sym)
+        if h is None:
+            h = {"status": "OK", "last_signal_time": None, "last_error": None, "signals_count": 0}
+        else:
+            h = dict(h)
+        h["signals_count"] = h.get("signals_count", 0) + 1
+        now = datetime.now(timezone.utc)
+        h["last_signal_time"] = now
+        symbol_health[sym] = h
+        if sym == "BTCEUR":
+            set_btceur_health(status="OK", last_signal_time=now)
+    except Exception:
+        pass
+
+def is_symbol_active(symbol: str) -> bool:
+    """Indica si un símbolo está actualmente activo en la configuración dinámica."""
+    try:
+        return active_symbols.get(symbol.upper(), False)
+    except Exception:
+        return False
+
 @dataclass
 class SignalContext:
     """Contexto completo de una señal para evaluación"""
@@ -67,28 +137,129 @@ class TradingEngine:
     """
     
     def __init__(self):
-        self.scoring_system = FlexibleScoring()
+        from core.scoring import get_scoring_system
+        self.scoring_system = get_scoring_system()
         self.confidence_system = ConfidenceSystem()
         self.duplicate_filter = DuplicateFilter()
+        
+        # Sistema de cooldown por símbolo
+        self.cooldown_state = {}  # {symbol: {'last_signal_index': int, 'cooldown_bars': int}}
+        self._load_cooldown_config()
         
         # Estadísticas internas para logging inteligente
         self.stats = defaultdict(int)
         self.rejection_reasons = defaultdict(int)
         self.last_dump = datetime.now()
     
+    def _load_cooldown_config(self):
+        """Carga configuración de cooldown desde rules_config.json"""
+        import json
+        import os
+        
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'rules_config.json')
+            with open(config_path, 'r') as f:
+                rules = json.load(f)
+            
+            # Inicializar cooldown para cada símbolo
+            for symbol in ['EURUSD', 'XAUUSD', 'BTCEUR']:
+                symbol_rules = rules.get(symbol, {})
+                cooldown_bars = symbol_rules.get('cooldown_bars', 10)  # Default: 10 velas
+                
+                self.cooldown_state[symbol] = {
+                    'last_signal_index': None,
+                    'cooldown_bars': cooldown_bars
+                }
+            
+            logger.info("✓ Configuración de cooldown cargada desde rules_config.json")
+            
+        except Exception as e:
+            logger.warning(f"Error cargando configuración de cooldown, usando valores por defecto: {e}")
+            # Fallback a valores por defecto
+            for symbol in ['EURUSD', 'XAUUSD', 'BTCEUR']:
+                self.cooldown_state[symbol] = {
+                    'last_signal_index': None,
+                    'cooldown_bars': 10
+                }
+    
+    def _check_cooldown(self, symbol: str, current_index: int) -> Tuple[bool, Optional[str]]:
+        """
+        Verifica si una señal está en período de cooldown
+        
+        Args:
+            symbol: Símbolo del instrumento
+            current_index: Índice de la vela actual
+            
+        Returns:
+            Tuple (is_in_cooldown, reason)
+        """
+        if symbol not in self.cooldown_state:
+            # Símbolo no configurado, permitir señal
+            return False, None
+        
+        state = self.cooldown_state[symbol]
+        last_index = state.get('last_signal_index')
+        cooldown_bars = state.get('cooldown_bars', 10)
+        
+        if last_index is None:
+            # Primera señal, no hay cooldown
+            return False, None
+        
+        bars_since_last = current_index - last_index
+        
+        if bars_since_last < cooldown_bars:
+            # Aún en cooldown
+            remaining = cooldown_bars - bars_since_last
+            return True, f"Cooldown activo: {remaining} velas restantes (última señal en vela {last_index})"
+        
+        # Cooldown expirado, permitir señal
+        return False, None
+    
+    def _update_cooldown(self, symbol: str, current_index: int):
+        """
+        Actualiza el estado de cooldown después de generar una señal válida
+        
+        Args:
+            symbol: Símbolo del instrumento
+            current_index: Índice de la vela actual
+        """
+        if symbol not in self.cooldown_state:
+            # Inicializar si no existe
+            self.cooldown_state[symbol] = {
+                'last_signal_index': current_index,
+                'cooldown_bars': 10
+            }
+        else:
+            self.cooldown_state[symbol]['last_signal_index'] = current_index
+    
     def evaluate_signal(self, df: pd.DataFrame, symbol: str, strategy: str = 'ema50_200', 
-                       config: Dict = None) -> SignalResult:
+                       config: Dict = None, skip_duplicate_filter: bool = False, 
+                       current_index: Optional[int] = None) -> SignalResult:
         """
         Evaluación completa de señal con pipeline integrado:
         1. Detectar setup básico
         2. Calcular scoring y confianza  
-        3. Aplicar filtros
+        3. Aplicar filtros (duplicados y cooldown)
         4. Decisión final
+        
+        Args:
+            df: DataFrame con datos OHLCV
+            symbol: Símbolo del instrumento
+            strategy: Nombre de la estrategia a usar
+            config: Configuración específica (opcional)
+            skip_duplicate_filter: Si True, omite el filtro de duplicados (para diagnóstico)
+            current_index: Índice de la vela actual (para cooldown en replay)
         """
         try:
+            # 0. Verificar si el símbolo está activo antes de cualquier cálculo
+            if not is_symbol_active(symbol):
+                return self._create_rejection_result(
+                    symbol, strategy, "Símbolo desactivado en configuración dinámica"
+                )
+
             # 1. Detectar señal básica
             from signals import detect_signal
-            raw_signal, df_with_indicators = detect_signal(df, strategy, config)
+            raw_signal, df_with_indicators = detect_signal(df, strategy, config, symbol=symbol)
             
             if not raw_signal:
                 return self._create_rejection_result(
@@ -112,22 +283,35 @@ class TradingEngine:
             scoring_result = self.scoring_system.evaluate_signal_context(context)
             confidence_result = self.confidence_system.calculate_confidence_context(context)
             
-            # 4. Verificar filtro de duplicados
-            is_duplicate, duplicate_reason = self.duplicate_filter.is_duplicate(raw_signal, symbol)
-            if is_duplicate:
-                return self._create_rejection_result(
-                    symbol, strategy, f"Duplicado: {duplicate_reason}"
-                )
+            # 4. Verificar filtro de duplicados (solo si no se omite)
+            if not skip_duplicate_filter:
+                is_duplicate, duplicate_reason = self.duplicate_filter.is_duplicate(raw_signal, symbol)
+                if is_duplicate:
+                    return self._create_rejection_result(
+                        symbol, strategy, f"Duplicado: {duplicate_reason}"
+                    )
             
             # 5. Decisión final
             should_show = scoring_result.should_show and confidence_result.should_show
             should_execute = should_show and confidence_result.should_execute
             
-            # 6. Crear señal final enriquecida
+            # 6. Verificar cooldown ANTES de crear señal final (solo si pasó scoring y confianza)
+            if should_show and current_index is not None:
+                is_in_cooldown, cooldown_reason = self._check_cooldown(symbol, current_index)
+                if is_in_cooldown:
+                    return self._create_rejection_result(
+                        symbol, strategy, cooldown_reason
+                    )
+            
+            # 7. Crear señal final enriquecida
             if should_show:
                 final_signal = self._enrich_signal(
                     raw_signal, scoring_result, confidence_result, context
                 )
+                
+                # Actualizar cooldown si se proporcionó índice
+                if current_index is not None:
+                    self._update_cooldown(symbol, current_index)
                 
                 # Actualizar estadísticas
                 self.stats['signals_shown'] += 1

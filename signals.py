@@ -14,7 +14,7 @@ from typing import Dict, Optional, Tuple
 import pandas as pd
 
 # Imports del core refactorizado
-from core.engine import get_trading_engine
+from core.engine import get_trading_engine, is_symbol_active, set_btceur_health, record_signal
 
 # Import usando el nuevo sistema de estrategias
 from strategies import get_strategy
@@ -24,21 +24,115 @@ logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 # Registry de estrategias disponibles
+# rules_config.json usa eurusd_simple, xauusd_simple, btceur_simple → deben estar registradas
 STRATEGY_REGISTRY = {
-    'ema50_200': lambda: get_strategy('EURUSD'),
-    'eurusd': lambda: get_strategy('EURUSD'),
-    'eurusd_advanced': lambda: get_strategy('EURUSD'),
-    'xauusd': lambda: get_strategy('XAUUSD'),
-    'xauusd_advanced': lambda: get_strategy('XAUUSD'),
-    'btceur': lambda: get_strategy('BTCEUR'),  # Will fallback to EURUSD if not available
-    'btcusdt': lambda: get_strategy('BTCEUR'),  # Will fallback to EURUSD if not available
-    
+    'ema50_200':        lambda: get_strategy('EURUSD'),
+    'eurusd':           lambda: get_strategy('EURUSD'),
+    'eurusd_simple':    lambda: get_strategy('EURUSD'),
+    'eurusd_advanced':  lambda: _get_eurusd_advanced(),
+    'eurusd_mtf':       lambda: _get_eurusd_mtf(),
+    'eurusd_asian_breakout': lambda: _get_eurusd_asian_breakout(),
+    'xauusd':           lambda: get_strategy('XAUUSD'),
+    'xauusd_simple':    lambda: get_strategy('XAUUSD'),
+    'xauusd_advanced':  lambda: _get_xauusd_advanced(),
+    'xauusd_reversal':  lambda: _get_xauusd_reversal(),
+    'xauusd_momentum':  lambda: _get_xauusd_momentum(),
+    'xauusd_psychological': lambda: _get_xauusd_psychological(),
+
+    # BTCEUR: todos los alias apuntan a la misma estrategia específica
+    'btceur':                lambda: get_strategy('BTCEUR'),
+    'btceur_simple':         lambda: get_strategy('BTCEUR'),
+    'btceur_advanced':       lambda: get_strategy('BTCEUR'),
+    'btc_trend_pullback_v1': lambda: _get_btc_trend_pullback(),
+    'btceur_weekly_breakout': lambda: _get_btceur_weekly_breakout(),
+    'btcusdt':               lambda: get_strategy('BTCEUR'),
+    'btc':                   lambda: get_strategy('BTCEUR'),
+
     # Estrategias genéricas (fallback)
-    'rsi': lambda: get_strategy('EURUSD'),  # Usar EURUSD como fallback
-    'macd': lambda: get_strategy('EURUSD'),  # Usar EURUSD como fallback
+    'rsi':  lambda: get_strategy('EURUSD'),
+    'macd': lambda: get_strategy('EURUSD'),
 }
 
-def detect_signal(df: pd.DataFrame, strategy: str = 'ema50_200', config: dict = None) -> Tuple[Optional[Dict], pd.DataFrame]:
+# ── Helpers para instanciar variantes avanzadas ───────────────────────────────
+
+def _get_btc_trend_pullback():
+    try:
+        from strategies.btc_trend_pullback_v1 import BTCTrendPullbackV1Strategy
+        return BTCTrendPullbackV1Strategy()
+    except Exception as e:
+        logger.warning(f"BTCTrendPullbackV1Strategy no disponible: {e}")
+        return get_strategy('BTCEUR')
+
+def _get_eurusd_asian_breakout():
+    try:
+        from strategies.eurusd_asian_breakout import EURUSDAsianBreakoutStrategy
+        return EURUSDAsianBreakoutStrategy()
+    except Exception as e:
+        logger.warning(f"EURUSDAsianBreakoutStrategy no disponible: {e}")
+        return get_strategy('EURUSD')
+
+def _get_xauusd_psychological():
+    try:
+        from strategies.xauusd_psychological import XAUUSDPsychologicalStrategy
+        return XAUUSDPsychologicalStrategy()
+    except Exception as e:
+        logger.warning(f"XAUUSDPsychologicalStrategy no disponible: {e}")
+        return get_strategy('XAUUSD')
+
+def _get_btceur_weekly_breakout():
+    try:
+        from strategies.btceur_weekly_breakout import BTCEURWeeklyBreakoutStrategy
+        return BTCEURWeeklyBreakoutStrategy()
+    except Exception as e:
+        logger.warning(f"BTCEURWeeklyBreakoutStrategy no disponible: {e}")
+        return get_strategy('BTCEUR')
+
+def _get_eurusd_advanced():
+    try:
+        from strategies.eurusd import EURUSDAdvancedStrategy
+        return EURUSDAdvancedStrategy()
+    except Exception as e:
+        logger.warning(f"EURUSDAdvancedStrategy no disponible, usando simple: {e}")
+        return get_strategy('EURUSD')
+
+def _get_eurusd_mtf():
+    try:
+        from strategies.eurusd_mtf import EURUSDMultiTimeframeStrategy
+        return EURUSDMultiTimeframeStrategy()
+    except Exception as e:
+        logger.warning(f"EURUSDMultiTimeframeStrategy no disponible: {e}")
+        return get_strategy('EURUSD')
+
+def _get_xauusd_advanced():
+    try:
+        from strategies.xauusd import XAUUSDStrategy as XAUUSDReversal
+        return XAUUSDReversal()
+    except Exception as e:
+        logger.warning(f"XAUUSDAdvanced no disponible: {e}")
+        return get_strategy('XAUUSD')
+
+def _get_xauusd_reversal():
+    try:
+        from strategies.xauusd import XAUUSDReversalStrategy
+        return XAUUSDReversalStrategy()
+    except Exception as e:
+        logger.warning(f"XAUUSDReversalStrategy no disponible: {e}")
+        return get_strategy('XAUUSD')
+
+def _get_xauusd_momentum():
+    try:
+        from strategies.xauusd import XAUUSDMomentumStrategy
+        return XAUUSDMomentumStrategy()
+    except Exception as e:
+        logger.warning(f"XAUUSDMomentumStrategy no disponible: {e}")
+        return get_strategy('XAUUSD')
+
+def detect_signal(
+    df: pd.DataFrame,
+    strategy: str = 'ema50_200',
+    config: dict = None,
+    symbol: Optional[str] = None,
+) -> Tuple[Optional[Dict], pd.DataFrame]:
     """
     Dispatcher principal de detección de señales
     
@@ -55,18 +149,50 @@ def detect_signal(df: pd.DataFrame, strategy: str = 'ema50_200', config: dict = 
         if df is None or len(df) < 10:
             logger.debug(f"Datos insuficientes para {strategy}: {len(df) if df is not None else 0} velas")
             return None, df
+
+        # Respetar configuración de símbolos activos si se especifica un símbolo
+        if symbol is not None and not is_symbol_active(symbol):
+            logger.info(f"Símbolo {symbol} desactivado en active_symbols; omitiendo detección de señal.")
+            return None, df
         
         # Obtener estrategia del registry
         strategy_name = (strategy or 'ema50_200').lower()
         strategy_factory = STRATEGY_REGISTRY.get(strategy_name)
         
+        # PROTECCIÓN: si no hay factory registrada
         if strategy_factory is None:
-            # Fallback a estrategia por defecto
+            # BTCEUR NUNCA debe hacer fallback silencioso
+            if symbol and symbol.upper() == 'BTCEUR':
+                err_msg = f"Estrategia '{strategy_name}' no registrada; BTCEUR no puede usar fallback a EURUSD."
+                logger.error("[CRITICAL][BTCEUR] %s", err_msg)
+                set_btceur_health(status="ERROR", last_error=err_msg)
+                return None, df
+            # Otros símbolos mantienen el comportamiento previo
             logger.warning(f"Estrategia {strategy_name} no encontrada, usando EURUSD por defecto")
             strategy_factory = STRATEGY_REGISTRY['eurusd']
         
         # Crear instancia de la estrategia
         strategy_instance = strategy_factory()
+        
+        # Log del nombre real de la estrategia para BTCEUR
+        if symbol and symbol.upper() == 'BTCEUR':
+            logger.debug(f"[BTCEUR] Strategy instance: {strategy_instance.__class__.__name__} from {strategy_instance.__class__.__module__}")
+        
+        # Verificación estricta para BTCEUR: la clase debe ser BTCEURStrategy
+        if symbol and symbol.upper() == 'BTCEUR':
+            if strategy_instance is None:
+                err_msg = "get_strategy('BTCEUR') devolvió None."
+                logger.error("[CRITICAL][BTCEUR] %s", err_msg)
+                set_btceur_health(status="ERROR", last_error=err_msg)
+                return None, df
+            cls_name = strategy_instance.__class__.__name__
+            # Clases válidas para BTCEUR: BTCEURStrategy (baseline) y BTCCycleV1Strategy (nueva)
+            valid_btceur_classes = ('BTCEURStrategy', 'BTCTrendPullbackV1Strategy', 'BTCEURWeeklyBreakoutStrategy')
+            if cls_name not in valid_btceur_classes:
+                err_msg = f"Estrategia incorrecta: {cls_name} (válidas: {valid_btceur_classes})."
+                logger.error("[CRITICAL][BTCEUR] %s Abortando detección.", err_msg)
+                set_btceur_health(status="ERROR", last_error=err_msg)
+                return None, df
         
         # Detectar señal usando la estrategia
         df_with_indicators = strategy_instance.add_indicators(df, config)
@@ -74,6 +200,8 @@ def detect_signal(df: pd.DataFrame, strategy: str = 'ema50_200', config: dict = 
         
         if signal:
             logger.debug(f"Señal detectada con {strategy_name}: {signal['type']} {signal.get('symbol', 'UNKNOWN')}")
+            if symbol:
+                record_signal(symbol.upper())
         else:
             logger.debug(f"No hay señal con {strategy_name}")
         
@@ -105,12 +233,27 @@ def detect_signal_advanced(df: pd.DataFrame, strategy: str = 'ema50_200',
         
         # Evaluar señal con pipeline completo
         result = trading_engine.evaluate_signal(df, symbol, strategy, config)
+
+        # Obtener nombre real de la estrategia instanciada
+        actual_strategy_name = strategy
         
+        # Para BTCEUR, forzar el nombre correcto
+        if symbol and symbol.upper() == 'BTCEUR':
+            actual_strategy_name = 'btceur_new'
+        
+        # Si hay señal, intentar obtener el nombre del contexto
+        if result.signal and 'context' in result.signal:
+            context_strategy = result.signal['context'].get('strategy')
+            if context_strategy:
+                actual_strategy_name = context_strategy
+        elif result.details and 'strategy_name' in result.details:
+            actual_strategy_name = result.details['strategy_name']
+
         # Extraer información para compatibilidad
         if result.signal:
             evaluation_info = {
                 'approved': result.should_show,
-                'strategy_used': strategy,
+                'strategy_used': actual_strategy_name,
                 'confidence': result.confidence,
                 'score': result.score,
                 'should_show': result.should_show,
@@ -123,7 +266,7 @@ def detect_signal_advanced(df: pd.DataFrame, strategy: str = 'ema50_200',
         else:
             evaluation_info = {
                 'approved': False,
-                'strategy_used': strategy,
+                'strategy_used': actual_strategy_name,
                 'confidence': 'NONE',
                 'score': 0.0,
                 'should_show': False,
