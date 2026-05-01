@@ -112,21 +112,30 @@ class DashboardService:
                             self.send_response(200)
                             self.send_header('Content-type', 'text/html; charset=utf-8')
                             self.end_headers()
-                            self.wfile.write(body)
+                            try:
+                                self.wfile.write(body)
+                            except (ConnectionAbortedError, BrokenPipeError, OSError):
+                                pass  # navegador cerró la conexión — no es un error real
                         elif self.path == '/api/metrics':
                             body = json.dumps(dashboard_service.get_current_metrics(), indent=2).encode('utf-8')
                             self.send_response(200)
                             self.send_header('Content-type', 'application/json')
                             self.send_header('Access-Control-Allow-Origin', '*')
                             self.end_headers()
-                            self.wfile.write(body)
+                            try:
+                                self.wfile.write(body)
+                            except (ConnectionAbortedError, BrokenPipeError, OSError):
+                                pass
                         elif self.path.startswith('/api/history'):
                             body = json.dumps(dashboard_service.get_signal_history(hours=168), indent=2).encode('utf-8')
                             self.send_response(200)
                             self.send_header('Content-type', 'application/json')
                             self.send_header('Access-Control-Allow-Origin', '*')
                             self.end_headers()
-                            self.wfile.write(body)
+                            try:
+                                self.wfile.write(body)
+                            except (ConnectionAbortedError, BrokenPipeError, OSError):
+                                pass
                         elif self.path == '/api/export':
                             csv = dashboard_service.export_signals_csv().encode('utf-8')
                             fname = f"signals_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
@@ -135,14 +144,22 @@ class DashboardService:
                             self.send_header('Content-Disposition', f'attachment; filename="{fname}"')
                             self.send_header('Access-Control-Allow-Origin', '*')
                             self.end_headers()
-                            self.wfile.write(csv)
+                            try:
+                                self.wfile.write(csv)
+                            except (ConnectionAbortedError, BrokenPipeError, OSError):
+                                pass
                         else:
                             self.send_response(404)
                             self.end_headers()
+                    except (ConnectionAbortedError, BrokenPipeError, OSError):
+                        pass  # conexión cortada por el cliente
                     except Exception as e:
                         logger.error(f"Dashboard request error: {e}")
-                        self.send_response(500)
-                        self.end_headers()
+                        try:
+                            self.send_response(500)
+                            self.end_headers()
+                        except Exception:
+                            pass
 
                 def log_message(self, *args):
                     pass
