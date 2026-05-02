@@ -123,9 +123,12 @@ class IntelligentLogger:
                     self.terminal = original_stream
                     
                 def write(self, message):
-                    # Escribir a terminal
-                    self.terminal.write(message)
-                    self.terminal.flush()
+                    # Escribir a terminal — con protección contra bloqueos
+                    try:
+                        self.terminal.write(message)
+                        self.terminal.flush()
+                    except Exception:
+                        pass  # Si la terminal se bloquea, ignorar y continuar
                     
                     # Escribir a archivo con timestamp
                     try:
@@ -239,7 +242,10 @@ class IntelligentLogger:
         console_msg = f"[{timestamp}] {emoji} {component}: {message}"
         
         # Imprimir (se capturará automáticamente en archivo)
-        print(console_msg)
+        try:
+            print(console_msg)
+        except Exception:
+            pass  # Si print bloquea (terminal congelada), continuar sin crashear
         
         # También usar logger estándar para compatibilidad
         log_level = getattr(logging, level.upper(), logging.INFO)
