@@ -101,14 +101,14 @@ echo    🌐 Servidor web en http://localhost:5000
 echo    ⏹️  Presiona Ctrl+C para detener
 echo.
 
-REM Ejecutar bot con captura de errores y manejo de Ctrl+C
-REM Configurar manejo de señales para evitar prompt
+REM Ejecutar bot — sin pipe para evitar bloqueos de buffer
 @echo off
 setlocal
 set "PYTHONUNBUFFERED=1"
+set "PYTHONIOENCODING=utf-8"
 
-REM Ejecutar Python en modo no interactivo para evitar prompts
-echo | %PYTHON_CMD% %BOT_SCRIPT%
+REM Lanzar Python directamente, sin echo| pipe que puede bloquear el event loop
+%PYTHON_CMD% -u %BOT_SCRIPT%
 
 endlocal
 
